@@ -177,12 +177,13 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
 
   | Resolution | Re-encode above | Why |
   |---|---|---|
-  | 1080p | 3.5 Mb/s | higher than any sampled Squish output |
-  | 720p | 1.6 Mb/s | scaled by pixel count |
-  | SD | 0.8 Mb/s | scaled by pixel count |
+  | 1080p | 4.5 Mb/s | above every Squish output in the library (max 4.2 Mb/s over 5,554 files) |
+  | 720p | 1.6 Mb/s | Squish's 720p output tops out at 0.9 Mb/s |
+  | SD | 0.8 Mb/s | Squish's SD output tops out at 0.5 Mb/s |
   | > 1080p | never (v1) | out of scope |
 
-  The 54 H.265 files in the current backlog sit at ~1.3 Mb/s, so they're skipped.
+  First scan: Squish's own files are all below these, so they're never re-encoded;
+  two other H.265 files (4.7 and 4.8 Mb/s) are.
 - Every result must still be ≥ 20 % smaller than the original, or it's discarded.
 - Audio is bigger than Squish's (E-AC3 5.1 640k instead of AAC stereo 128k),
   by Sam's choice; video settings stay at Squish's level.

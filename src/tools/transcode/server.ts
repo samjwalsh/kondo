@@ -30,7 +30,7 @@ export const transcodeSettings: SettingsSection = {
       key: "threshold1080Mbps",
       label: "Re-encode 1080p H.265 above (Mb/s)",
       type: "number",
-      default: 3.5,
+      default: 4.5,
       min: 0.5,
       max: 50,
       step: 0.1,
