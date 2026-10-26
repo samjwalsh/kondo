@@ -357,6 +357,8 @@ export class JobQueue {
       const decision = this.policy(active.slot, active.force);
       if (!decision.allowed && !active.paused) {
         active.pause();
+        // Save the last progress now so the frozen job shows where it really stopped.
+        this.flushProgress(active);
         this.setState(active.id, "paused");
         this.addLog(active.id, `Paused: ${decision.reason}`);
       } else if (decision.allowed && active.paused) {
