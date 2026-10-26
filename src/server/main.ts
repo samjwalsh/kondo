@@ -1,16 +1,17 @@
-import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { createKondo } from "./kondo.js";
 
 const config = loadConfig();
-const app = await buildApp(config);
+const kondo = await createKondo(config);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, async () => {
-    app.log.info({ signal }, "shutting down");
-    await app.close();
+    kondo.app.log.info({ signal }, "shutting down");
+    await kondo.stop();
     process.exit(0);
   });
 }
 
-await app.listen({ host: config.host, port: config.port });
-app.log.info({ version: config.version }, "kondo started");
+await kondo.start();
+await kondo.app.listen({ host: config.host, port: config.port });
+kondo.app.log.info({ version: config.version }, "kondo started");

@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "test": "vitest run",
+    "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run",
     "check": "npm run lint && npm run typecheck && npm run test",
     "deploy": "bash deploy/deploy.sh"
   },

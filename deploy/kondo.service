@@ -6,9 +6,13 @@ Documentation=https://github.com/samjwalsh/kondo
 Type=simple
 WorkingDirectory=%h/kondo
 EnvironmentFile=%h/kondo/config/kondo.env
-ExecStart=%h/kondo/node/bin/node %h/kondo/current/server/main.mjs
+# node:sqlite still prints an "experimental" warning on every start.
+ExecStart=%h/kondo/node/bin/node --disable-warning=ExperimentalWarning %h/kondo/current/server/main.mjs
 Restart=always
 RestartSec=5
+# Also stops any ffmpeg Kondo started.
+KillMode=control-group
+TimeoutStopSec=20
 
 [Install]
 WantedBy=default.target
