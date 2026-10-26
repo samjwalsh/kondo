@@ -122,6 +122,10 @@ export async function runScan(job: JobContext<unknown>, deps: ScanDeps): Promise
     job.log(`${toTranscode} file(s) to transcode`);
     return { files: found.size, read, unreadable, toTranscode };
   } catch (error) {
+    if (error instanceof JobCancelledError) {
+      deps.store.discardScan(scanId);
+      throw error;
+    }
     deps.store.finishScan(scanId, {
       files: 0,
       probed: read,

@@ -230,6 +230,7 @@ dd {
 }
 
 .badge {
+  white-space: nowrap;
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -607,6 +608,7 @@ textarea {
   gap: 6px;
 }
 .file {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -639,7 +641,10 @@ textarea {
 }
 @media (max-width: 720px) {
   .file-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .file-size {
+    text-align: left;
   }
 }
 
@@ -661,6 +666,10 @@ table.tracks td {
   padding: 6px 8px;
   border-top: 1px solid var(--border);
   vertical-align: top;
+  overflow-wrap: break-word;
+}
+table.tracks td:first-child {
+  white-space: nowrap;
 }
 table.tracks tr.drop td:nth-child(2) {
   color: var(--muted);
@@ -694,4 +703,12 @@ table.tracks .badge {
   justify-content: center;
   gap: 14px;
   margin: 12px 0;
+}
+
+/* Long unbroken file names and paths must wrap, not widen the page. */
+.content {
+  min-width: 0;
+}
+.file-detail p {
+  overflow-wrap: anywhere;
 }

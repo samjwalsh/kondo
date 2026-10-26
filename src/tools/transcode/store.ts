@@ -315,6 +315,11 @@ export class LibraryStore {
       .run(new Date().toISOString(), stats.files, stats.probed, stats.errors, stats.error, id);
   }
 
+  /** Forgets a scan that was cancelled or cut short by a restart (it isn't a failure). */
+  discardScan(id: number): void {
+    this.db.prepare("DELETE FROM transcode_scans WHERE id = ?").run(id);
+  }
+
   lastScan(): ScanInfo | null {
     const row = this.db
       .prepare(
