@@ -1,12 +1,18 @@
 import { existsSync } from "node:fs";
 import fastifyStatic from "@fastify/static";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, LogController } from "fastify";
 import type { Config } from "./config.js";
 import { registerHealthRoutes } from "./routes/health.js";
 
 export async function buildApp(config: Config): Promise<FastifyInstance> {
-  // Per-request logs would flood the journal (the UI polls health every 10 s).
-  const app = Fastify({ logger: { level: config.logLevel }, disableRequestLogging: true });
+  const app = Fastify({
+    logger: { level: config.logLevel },
+    // The UI polls health every 10 s; logging those would flood the journal.
+    // (Turning request logging off entirely would also hide request errors.)
+    logController: new LogController({
+      disableRequestLogging: (request) => request.url === "/api/health",
+    }),
+  });
 
   registerHealthRoutes(app, config);
 
