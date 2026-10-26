@@ -228,6 +228,17 @@ function Field({
         )}
       </div>
     );
+  } else if (field.type === "lines") {
+    input = (
+      <textarea
+        id={id}
+        rows={Math.max(2, String(value).split("\n").length + 1)}
+        value={String(value)}
+        placeholder={field.placeholder}
+        aria-invalid={error ? true : undefined}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
   } else {
     const type = field.type === "number" ? "number" : field.type === "time" ? "time" : "text";
     input = (
@@ -237,6 +248,7 @@ function Field({
         value={String(value)}
         min={field.min}
         max={field.max}
+        step={field.type === "number" ? (field.step ?? 1) : undefined}
         placeholder={field.placeholder}
         list={field.type === "timezone" ? "time-zones" : undefined}
         aria-invalid={error ? true : undefined}

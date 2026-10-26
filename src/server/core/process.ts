@@ -11,6 +11,8 @@ export interface RunOptions {
   onStderrLine?: (line: string) => void;
   /** Lets the job queue pause/resume/stop the process; returns an unregister function. */
   register?: (child: ChildProcess) => () => void;
+  /** Kill the process if it runs longer than this. */
+  timeoutMs?: number;
 }
 
 export interface RunResult {
@@ -18,6 +20,7 @@ export interface RunResult {
   signal: NodeJS.Signals | null;
   /** The last lines of stderr, for error messages. */
   stderrTail: string[];
+  timedOut: boolean;
 }
 
 /** Runs a command without a shell (arguments are never interpreted). */
@@ -42,6 +45,14 @@ export function runProcess(
     const unregister = options.register?.(child);
     const stderrTail: string[] = [];
     let settled = false;
+    let timedOut = false;
+    const timer =
+      options.timeoutMs === undefined
+        ? null
+        : setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGKILL");
+          }, options.timeoutMs);
 
     readline
       .createInterface({ input: child.stdout })
@@ -55,6 +66,7 @@ export function runProcess(
     child.once("error", (error: NodeJS.ErrnoException) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       unregister?.();
       reject(
         error.code === "ENOENT"
@@ -65,8 +77,9 @@ export function runProcess(
     child.once("close", (code, signal) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       unregister?.();
-      resolve({ code, signal, stderrTail });
+      resolve({ code, signal, stderrTail, timedOut });
     });
   });
 }

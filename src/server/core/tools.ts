@@ -34,6 +34,13 @@ export interface ToolContext {
   addHealthCheck(def: HealthCheckDef): void;
   /** Routes are mounted under /api/tools/<toolId>. */
   routes(register: (app: FastifyInstance) => void | Promise<void>): void;
+  /**
+   * Runs `task` every `intervalMs()` (re-read each time, so it can follow a setting),
+   * first after `firstAfterMs`. Started and stopped with Kondo.
+   */
+  every(intervalMs: () => number, task: () => void | Promise<void>, firstAfterMs?: number): void;
+  /** The dashboard summary, built from the tool's own state. */
+  setCard(card: () => ToolCard | Promise<ToolCard>): void;
 }
 
 export interface ToolDefinition {
@@ -44,8 +51,6 @@ export interface ToolDefinition {
   settings?: SettingsSection[];
   migrations?: Migration[];
   register(ctx: ToolContext): void | Promise<void>;
-  /** A small summary for the dashboard. */
-  card?(): ToolCard | Promise<ToolCard>;
 }
 
 export function defineTool(def: ToolDefinition): ToolDefinition {

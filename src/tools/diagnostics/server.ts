@@ -168,6 +168,20 @@ export default defineTool({
       },
     });
 
+    ctx.setCard(() => {
+      if (!cached) return { status: "ok", lines: ["Checking encoders…"] };
+      if (!cached.ffmpeg.found) return { status: "error", lines: ["ffmpeg not found"] };
+      const yes = (ok: boolean) => (ok ? "ready" : "missing");
+      return {
+        status: WANTED.every((n) => cached?.encoders[n]) ? "ok" : "warn",
+        lines: [
+          `GPU encoder (hevc_nvenc): ${yes(cached.encoders.hevc_nvenc)}${cached.gpu ? ` on ${cached.gpu.name}` : ""}`,
+          `CPU encoder (libx265): ${yes(cached.encoders.libx265)}`,
+          `E-AC3 audio: ${yes(cached.encoders.eac3)}`,
+        ],
+      };
+    });
+
     ctx.routes((app) => {
       app.get<{ Querystring: { refresh?: string } }>("/encoders", async (request) => {
         const stale = !cached || Date.now() - Date.parse(cached.checkedAt) > REPORT_TTL_MS;
@@ -184,19 +198,5 @@ export default defineTool({
           .send(ctx.enqueue("test-encode", { slot, seconds: clamped }, { force }));
       });
     });
-  },
-
-  card() {
-    if (!cached) return { status: "ok", lines: ["Checking encoders…"] };
-    if (!cached.ffmpeg.found) return { status: "error", lines: ["ffmpeg not found"] };
-    const yes = (ok: boolean) => (ok ? "ready" : "missing");
-    return {
-      status: WANTED.every((n) => cached?.encoders[n]) ? "ok" : "warn",
-      lines: [
-        `GPU encoder (hevc_nvenc): ${yes(cached.encoders.hevc_nvenc)}${cached.gpu ? ` on ${cached.gpu.name}` : ""}`,
-        `CPU encoder (libx265): ${yes(cached.encoders.libx265)}`,
-        `E-AC3 audio: ${yes(cached.encoders.eac3)}`,
-      ],
-    };
   },
 });

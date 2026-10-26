@@ -9,7 +9,9 @@ export type FieldType =
   | "time"
   | "secret"
   | "select"
-  | "timezone";
+  | "timezone"
+  /** Several values, one per line (stored as text joined with "\n"). */
+  | "lines";
 
 export type FieldValue = string | number | boolean;
 
@@ -22,7 +24,17 @@ export interface FieldSpec {
   placeholder?: string;
   min?: number;
   max?: number;
+  /** For numbers; defaults to whole numbers. */
+  step?: number;
   options?: { value: string; label: string }[];
+}
+
+/** Splits a "lines" value into its non-empty entries. */
+export function splitLines(value: FieldValue | undefined): string[] {
+  return String(value ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 export interface SettingsSection {
