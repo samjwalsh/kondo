@@ -57,7 +57,9 @@ kondo (one Node process, systemd, port 4242)
 
 ### What a tool is
 
-A folder under `tools/` exporting one object:
+A folder under `src/tools/<id>/` (`server.ts`, `web.tsx`, `shared.ts`), registered
+with one line in `src/tools/server.ts` and one in `src/tools/web.ts`. The server
+part exports one object:
 
 ```ts
 export default defineTool({
@@ -260,7 +262,8 @@ A separate action with a dry-run list first:
   button), notifications, logs.
 
 Access: Kondo's own subdomain through the existing reverse proxy (Nginx Proxy
-Manager) with forward authentication in front, like the other services.
+Manager) with forward authentication in front, like the other services. Direct
+access on the LAN port is deliberately left open (trusted network).
 Sonarr/Radarr webhooks call the VM directly on the LAN with a shared secret.
 
 ## Stack (proposal)
