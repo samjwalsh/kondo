@@ -1,0 +1,14 @@
+[Unit]
+Description=Kondo - keeps the media server tidy
+Documentation=https://github.com/samjwalsh/kondo
+
+[Service]
+Type=simple
+WorkingDirectory=%h/kondo
+EnvironmentFile=%h/kondo/config/kondo.env
+ExecStart=%h/kondo/node/bin/node %h/kondo/current/server/main.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
