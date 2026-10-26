@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, LogController } from "fastify";
+import type { ToolCard } from "../shared/api.js";
 import type { SettingsSection } from "../shared/settings.js";
 import { tools as builtInTools } from "../tools/server.js";
 import type { Config } from "./config.js";
@@ -106,6 +107,8 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
   const alerts = new Alerts(integrations.telegram, app.log);
   health.onEvaluated((summary) => alerts.onHealth(summary));
 
+  const repeating = new RepeatingTasks(app.log);
+  const cards = new Map<string, () => ToolCard | Promise<ToolCard>>();
   for (const tool of tools) {
     await registerTool(tool, {
       app,
@@ -117,6 +120,8 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
       scheduler,
       jobs,
       health,
+      repeating,
+      cards,
     });
   }
 
@@ -131,6 +136,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
     plex,
     scheduler,
     tools,
+    cards,
     testers: {
       plex: () => integrations.plex.test(),
       sonarr: () => integrations.sonarr.test(),
@@ -156,8 +162,10 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
       jobs.start();
       health.start();
       heartbeat.start();
+      repeating.start();
     },
     async stop() {
+      repeating.stop();
       heartbeat.stop();
       health.stop();
       await jobs.stop();
@@ -179,6 +187,54 @@ interface ToolDeps {
   scheduler: Scheduler;
   jobs: JobQueue;
   health: Health;
+  repeating: RepeatingTasks;
+  cards: Map<string, () => ToolCard | Promise<ToolCard>>;
+}
+
+/** Timers tools ask for with ctx.every(); only run while Kondo runs in the background. */
+class RepeatingTasks {
+  private readonly tasks: {
+    intervalMs: () => number;
+    task: () => void | Promise<void>;
+    firstAfterMs: number;
+  }[] = [];
+  private readonly timers = new Set<NodeJS.Timeout>();
+  private running = false;
+
+  constructor(private readonly log: FastifyInstance["log"]) {}
+
+  add(intervalMs: () => number, task: () => void | Promise<void>, firstAfterMs = 10_000): void {
+    this.tasks.push({ intervalMs, task, firstAfterMs });
+  }
+
+  start(): void {
+    this.running = true;
+    for (const t of this.tasks) {
+      const run = async () => {
+        try {
+          await t.task();
+        } catch (error) {
+          this.log.error({ err: error }, "repeating task failed");
+        }
+        if (this.running) this.schedule(run, t.intervalMs());
+      };
+      this.schedule(run, t.firstAfterMs);
+    }
+  }
+
+  stop(): void {
+    this.running = false;
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+  }
+
+  private schedule(run: () => Promise<void>, delayMs: number): void {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      void run();
+    }, delayMs);
+    this.timers.add(timer);
+  }
 }
 
 async function registerTool(tool: ToolDefinition, deps: ToolDeps): Promise<void> {
@@ -202,6 +258,8 @@ async function registerTool(tool: ToolDefinition, deps: ToolDeps): Promise<void>
     listJobs: (limit) => deps.jobs.list({ tool: tool.id, limit }),
     addHealthCheck: (def) => deps.health.register({ ...def, id: `${tool.id}.${def.id}` }),
     routes: (register) => routes.push(register),
+    every: (intervalMs, task, firstAfterMs) => deps.repeating.add(intervalMs, task, firstAfterMs),
+    setCard: (card) => deps.cards.set(tool.id, card),
   };
   await tool.register(ctx);
   if (routes.length > 0) {

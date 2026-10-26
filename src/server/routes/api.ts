@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { StatusResponse, ToolSummary } from "../../shared/api.js";
+import type { StatusResponse, ToolCard, ToolSummary } from "../../shared/api.js";
 import type { SettingsResponse, SettingsUpdate, TestResult } from "../../shared/settings.js";
 import type { EventBus } from "../core/events.js";
 import type { Health } from "../core/health.js";
@@ -19,11 +19,22 @@ export interface ApiDeps {
   plex: PlexMonitor;
   scheduler: Scheduler;
   tools: ToolDefinition[];
+  cards: Map<string, () => ToolCard | Promise<ToolCard>>;
   testers: Record<string, () => Promise<TestResult>>;
 }
 
 export function registerApiRoutes(app: FastifyInstance, deps: ApiDeps): void {
   const { settings, jobs } = deps;
+
+  const cardFor = async (id: string): Promise<ToolCard | null> => {
+    const card = deps.cards.get(id);
+    if (!card) return null;
+    try {
+      return await card();
+    } catch {
+      return { status: "warn", lines: ["Couldn't build this summary"] };
+    }
+  };
 
   app.get("/api/status", async (): Promise<StatusResponse> => {
     const tools: ToolSummary[] = await Promise.all(
@@ -31,7 +42,7 @@ export function registerApiRoutes(app: FastifyInstance, deps: ApiDeps): void {
         id: tool.id,
         name: tool.name,
         description: tool.description,
-        card: tool.card ? await Promise.resolve(tool.card()).catch(() => null) : null,
+        card: await cardFor(tool.id),
       })),
     );
     return {

@@ -137,11 +137,16 @@ track tags.
 | Track | Keep | Drop | Convert |
 |---|---|---|---|
 | Video | main video stream | cover-art images | → H.265 (8-bit or 10-bit to match source) |
-| Audio | English; untagged; original language; **always** the default track | commentary; audio description | lossless (TrueHD, DTS-HD, FLAC, PCM) and DTS → E-AC3 (5.1 @ 640k, stereo @ 224k; 7.1 → 5.1). AC3/E-AC3/AAC/Opus copied as-is |
-| Subtitles | English (incl. SDH and forced); untagged; forced in any language | other languages | MP4 `mov_text` → SRT (MKV can't hold it); everything else copied |
+| Audio | English; untagged; original language — **one track per language**, the best (most channels, then best source); all untagged tracks | commentary; audio description; other languages; extra tracks in a language already kept (e.g. an AC3 copy of a TrueHD mix) | lossless (TrueHD, DTS-HD, FLAC, PCM) and DTS → E-AC3 (5.1 @ 640k, stereo @ 224k; 7.1 → 5.1). AC3/E-AC3/AAC/Opus copied as-is |
+| Subtitles | English (incl. SDH and forced); untagged | other languages, including their forced subtitles (those are for that language's speakers) | MP4 `mov_text` → SRT (MKV can't hold it); everything else copied |
 | Other | chapters; font attachments when styled (ASS) subs are kept | — | — |
 
 If the rules would leave no audio track, keep the default and first tracks.
+
+Missing language tags: if a track's title names a language ("English [CC]"), that
+language is used and written into the new file. A lone unlabelled audio track in a
+title whose original language is known gets that language written in, so players
+label and pick it properly.
 Foreign film with no English subtitles: fine, transcode anyway.
 
 Known trade-off: Atmos inside TrueHD is lost when converting to E-AC3.
@@ -177,12 +182,13 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
 
   | Resolution | Re-encode above | Why |
   |---|---|---|
-  | 1080p | 3.5 Mb/s | higher than any sampled Squish output |
-  | 720p | 1.6 Mb/s | scaled by pixel count |
-  | SD | 0.8 Mb/s | scaled by pixel count |
+  | 1080p | 4.5 Mb/s | above every Squish output in the library (max 4.2 Mb/s over 5,554 files) |
+  | 720p | 1.6 Mb/s | Squish's 720p output tops out at 0.9 Mb/s |
+  | SD | 0.8 Mb/s | Squish's SD output tops out at 0.5 Mb/s |
   | > 1080p | never (v1) | out of scope |
 
-  The 54 H.265 files in the current backlog sit at ~1.3 Mb/s, so they're skipped.
+  First scan: Squish's own files are all below these, so they're never re-encoded;
+  two other H.265 files (4.7 and 4.8 Mb/s) are.
 - Every result must still be ≥ 20 % smaller than the original, or it's discarded.
 - Audio is bigger than Squish's (E-AC3 5.1 640k instead of AAC stereo 128k),
   by Sam's choice; video settings stay at Squish's level.

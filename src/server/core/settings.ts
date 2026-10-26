@@ -1,9 +1,10 @@
-import type {
-  FieldSpec,
-  FieldValue,
-  PublicValue,
-  SettingsSection,
-  SettingsUpdate,
+import {
+  type FieldSpec,
+  type FieldValue,
+  type PublicValue,
+  type SettingsSection,
+  type SettingsUpdate,
+  splitLines,
 } from "../../shared/settings.js";
 import type { Db } from "./db.js";
 import type { EventBus } from "./events.js";
@@ -67,6 +68,11 @@ function validateField(field: FieldSpec, raw: unknown): FieldValue {
       if (url.protocol !== "http:" && url.protocol !== "https:")
         throw "Must start with http:// or https://";
       return value.replace(/\/+$/, "");
+    }
+    case "lines": {
+      if (typeof raw !== "string") throw "Must be text";
+      if (raw.length > 10_000) throw "Too long";
+      return splitLines(raw).join("\n");
     }
     case "string":
     case "secret": {

@@ -21,3 +21,14 @@ export function duration(ms: number): string {
 export function percent(fraction: number | null): string {
   return fraction === null ? "" : `${Math.round(fraction * 100)}%`;
 }
+
+export function bytes(n: number): string {
+  if (n >= 1e12) return `${(n / 1e12).toFixed(2)} TB`;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
+  if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
+  return `${Math.round(n / 1e3)} KB`;
+}
+
+export function count(n: number): string {
+  return n.toLocaleString("en-GB");
+}
