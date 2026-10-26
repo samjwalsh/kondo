@@ -289,3 +289,64 @@ describe("media info", () => {
     expect(info.attachments).toHaveLength(1);
   });
 });
+
+describe("missing language tags", () => {
+  it("reads a language from the title and writes it into the new file", () => {
+    const r = run(
+      probe([
+        video("h264", 1920, 1080, { tags: { BPS: "9000000" } }),
+        audio("eac3", 6),
+        subtitle("subrip", undefined, "English [CC]"),
+      ]),
+    );
+    const sub = r.plan?.tracks.find((t) => t.kind === "subtitle");
+    expect(sub).toMatchObject({ action: "keep", setLanguage: "eng" });
+    expect(sub?.reason).toMatch(/going by its title/);
+    // The lone unlabelled audio track of an English show is labelled English, and there's no warning.
+    expect(r.plan?.tracks.find((t) => t.kind === "audio")).toMatchObject({
+      action: "keep",
+      setLanguage: "eng",
+    });
+    expect(r.plan?.notes).toEqual([]);
+  });
+
+  it("doesn't guess when several audio tracks are unlabelled", () => {
+    const r = run(
+      probe([
+        video("h264", 1920, 1080, { tags: { BPS: "9000000" } }),
+        audio("aac", 2),
+        audio("aac", 2),
+      ]),
+    );
+    expect(r.plan?.tracks.filter((t) => t.setLanguage)).toEqual([]);
+  });
+
+  it("keeps a lone track flagged as audio description, and says why", () => {
+    const r = run(
+      probe([
+        video("h264", 1920, 1080, { tags: { BPS: "9000000" } }),
+        audio("ac3", 2, undefined, undefined, { disposition: { visual_impaired: 1 } }),
+      ]),
+    );
+    expect(r.plan?.tracks[0]).toMatchObject({ action: "keep" });
+    expect(r.plan?.tracks[0]?.reason).toMatch(
+      /The only audio track \(marked as audio description\)/,
+    );
+  });
+});
+
+describe("forced subtitles", () => {
+  it("keeps English forced subtitles but drops another language's", () => {
+    const r = run(
+      probe([
+        video("h264", 1920, 1080, { tags: { BPS: "9000000" } }),
+        audio("eac3", 6, "ita"),
+        audio("eac3", 6, "eng", undefined, { isDefault: true }),
+        subtitle("subrip", "ita", "Forced", { forced: true }),
+        subtitle("subrip", "eng", "Forced", { forced: true }),
+      ]),
+    );
+    expect(actions(r.plan?.tracks ?? [])).toMatchObject({ 3: "drop", 4: "keep" });
+    expect(r.plan?.tracks.find((t) => t.index === 3)?.reason).toMatch(/Italian forced subtitles/);
+  });
+});

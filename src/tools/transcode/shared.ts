@@ -50,6 +50,8 @@ export interface AudioInfo {
   profile: string | null;
   channels: number;
   language: string | null;
+  /** The language came from the title because the track wasn't tagged. */
+  languageFromTitle: boolean;
   title: string | null;
   isDefault: boolean;
   commentary: boolean;
@@ -61,6 +63,7 @@ export interface SubtitleInfo {
   index: number;
   codec: string;
   language: string | null;
+  languageFromTitle: boolean;
   title: string | null;
   isDefault: boolean;
   forced: boolean;
@@ -98,6 +101,8 @@ export interface PlannedTrack {
   reason: string;
   /** Becomes the default track of its kind in the new file. */
   makeDefault?: boolean;
+  /** Language to write into the new file for a track that wasn't tagged. */
+  setLanguage?: string;
 }
 
 export interface Plan {

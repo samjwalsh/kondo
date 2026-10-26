@@ -157,3 +157,39 @@ export function languageName(code: string | null): string {
   if (!code) return "Unlabelled";
   return NAMES[code] ?? code;
 }
+
+// Native spellings seen in track titles, besides the English names above.
+const NATIVE_NAMES: Record<string, string> = {
+  español: "spa",
+  castellano: "spa",
+  français: "fre",
+  francais: "fre",
+  deutsch: "ger",
+  italiano: "ita",
+  português: "por",
+  portugues: "por",
+  nederlands: "dut",
+  svenska: "swe",
+  dansk: "dan",
+  norsk: "nor",
+  suomi: "fin",
+  polski: "pol",
+  čeština: "cze",
+  magyar: "hun",
+  türkçe: "tur",
+};
+
+/** A language named in a track title ("English [CC]", "Español latino"), if exactly one is. */
+export function languageFromTitle(title: string | null | undefined): string | null {
+  if (!title) return null;
+  const words = title
+    .toLowerCase()
+    .split(/[^\p{L}]+/u)
+    .filter(Boolean);
+  const found = new Set<string>();
+  for (const word of words) {
+    const code = BY_NAME.get(word) ?? NATIVE_NAMES[word];
+    if (code) found.add(code);
+  }
+  return found.size === 1 ? ([...found][0] ?? null) : null;
+}

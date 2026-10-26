@@ -1,4 +1,4 @@
-import { normalizeLanguage } from "./languages.js";
+import { languageFromTitle, normalizeLanguage } from "./languages.js";
 import type {
   AttachmentInfo,
   AudioInfo,
@@ -77,6 +77,17 @@ function readKbps(stream: ProbeStream): number | null {
 
 const flag = (s: ProbeStream, name: string) => (s.disposition?.[name] ?? 0) === 1;
 
+/** The tagged language, or one named in the title when the tag is missing. */
+function languageOf(
+  s: ProbeStream,
+  title: string | null,
+): { language: string | null; languageFromTitle: boolean } {
+  const tagged = normalizeLanguage(tag(s.tags, "language"));
+  if (tagged) return { language: tagged, languageFromTitle: false };
+  const fromTitle = languageFromTitle(title);
+  return { language: fromTitle, languageFromTitle: fromTitle !== null };
+}
+
 function hdrOf(s: ProbeStream): Hdr {
   const dovi =
     s.side_data_list?.some((d) => d.side_data_type?.toLowerCase().includes("dovi")) ||
@@ -111,7 +122,7 @@ export function extractMediaInfo(probe: Probe): MediaInfo {
         codec: s.codec_name ?? "unknown",
         profile: s.profile ?? null,
         channels: s.channels ?? 2,
-        language: normalizeLanguage(tag(s.tags, "language")),
+        ...languageOf(s, title),
         title,
         isDefault: flag(s, "default"),
         commentary: flag(s, "comment") || /comment/i.test(title ?? ""),
@@ -130,7 +141,7 @@ export function extractMediaInfo(probe: Probe): MediaInfo {
       return {
         index: s.index,
         codec: s.codec_name ?? "unknown",
-        language: normalizeLanguage(tag(s.tags, "language")),
+        ...languageOf(s, title),
         title,
         isDefault: flag(s, "default"),
         forced: flag(s, "forced") || /forced/i.test(title ?? ""),

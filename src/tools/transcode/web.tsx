@@ -383,6 +383,9 @@ function FileDetailView({ id }: { id: number }) {
                   <td>
                     <span className={`action ${t.action}`}>{ACTION_LABEL[t.action]}</span>
                     {t.to && <span className="small"> → {t.to}</span>}
+                    {t.setLanguage && (
+                      <span className="small muted"> · tagged “{t.setLanguage}”</span>
+                    )}
                   </td>
                   <td className="muted small">{t.reason}</td>
                 </tr>

@@ -138,10 +138,15 @@ track tags.
 |---|---|---|---|
 | Video | main video stream | cover-art images | → H.265 (8-bit or 10-bit to match source) |
 | Audio | English; untagged; original language; **always** the default track | commentary; audio description | lossless (TrueHD, DTS-HD, FLAC, PCM) and DTS → E-AC3 (5.1 @ 640k, stereo @ 224k; 7.1 → 5.1). AC3/E-AC3/AAC/Opus copied as-is |
-| Subtitles | English (incl. SDH and forced); untagged; forced in any language | other languages | MP4 `mov_text` → SRT (MKV can't hold it); everything else copied |
+| Subtitles | English (incl. SDH and forced); untagged | other languages, including their forced subtitles (those are for that language's speakers) | MP4 `mov_text` → SRT (MKV can't hold it); everything else copied |
 | Other | chapters; font attachments when styled (ASS) subs are kept | — | — |
 
 If the rules would leave no audio track, keep the default and first tracks.
+
+Missing language tags: if a track's title names a language ("English [CC]"), that
+language is used and written into the new file. A lone unlabelled audio track in a
+title whose original language is known gets that language written in, so players
+label and pick it properly.
 Foreign film with no English subtitles: fine, transcode anyway.
 
 Known trade-off: Atmos inside TrueHD is lost when converting to E-AC3.

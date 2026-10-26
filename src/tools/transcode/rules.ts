@@ -196,19 +196,42 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
     keep.find((a) => a.language === "eng") ??
     keep[0];
 
+  // A lone unlabelled track in a title whose original language is known is almost
+  // certainly in that language: label it, so players show and pick it properly.
+  const unlabelledKept = keep.filter((a) => a.language === null);
+  const labelAs =
+    originalLanguage &&
+    unlabelledKept.length === 1 &&
+    !keep.some((a) => a.language === originalLanguage)
+      ? originalLanguage
+      : null;
+
   let audioKbps = 0;
   for (const a of info.audio) {
     const summary = describeAudio(a);
     if (keep.includes(a)) {
       const out = audioOutput(a);
       audioKbps += out.kbps;
-      const why = fallback
-        ? "No English or original-language audio, so keeping the main track"
-        : a.language === "eng"
-          ? "English"
-          : a.language === null
-            ? "Language not labelled, kept to be safe"
-            : `Original language (${languageName(a.language)})`;
+      const setLanguage =
+        a.language === null && labelAs
+          ? labelAs
+          : a.languageFromTitle
+            ? (a.language ?? undefined)
+            : undefined;
+      let why: string;
+      if (fallback) {
+        why =
+          a.descriptive || a.commentary
+            ? `The only audio track (marked as ${a.commentary ? "commentary" : "audio description"}), so it's kept`
+            : "No English or original-language audio, so keeping the main track";
+      } else if (a.language === null) {
+        why = setLanguage
+          ? `Not labelled; the original language is ${languageName(setLanguage)}, so it's labelled that`
+          : "Language not labelled, kept to be safe";
+      } else {
+        why = a.language === "eng" ? "English" : `Original language (${languageName(a.language)})`;
+        if (a.languageFromTitle) why += ", going by its title";
+      }
       tracks.push({
         index: a.index,
         kind: "audio",
@@ -217,6 +240,7 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
         to: out.to ?? undefined,
         reason: out.reason ? `${why}. ${out.reason}` : why,
         makeDefault: a === defaultAudio,
+        setLanguage,
       });
       if (out.to && /atmos/i.test(summary))
         notes.push(`Atmos is lost converting ${audioCodecName(a)} to E-AC3.`);
@@ -251,19 +275,17 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
     }
     const why =
       s.language === "eng"
-        ? "English"
+        ? `English${s.languageFromTitle ? ", going by its title" : ""}`
         : s.language === null
           ? "Language not labelled, kept to be safe"
-          : s.forced
-            ? "Forced subtitles"
-            : null;
+          : null;
     if (!why) {
       tracks.push({
         index: s.index,
         kind: "subtitle",
         summary,
         action: "drop",
-        reason: `${languageName(s.language)}, not English`,
+        reason: `${languageName(s.language)}${s.forced ? " forced subtitles (for its own speakers)" : ""}, not English`,
       });
       continue;
     }
@@ -277,6 +299,7 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
       action: convert ? "convert" : "keep",
       to: convert ? "SRT" : undefined,
       reason: convert ? `${why}. MKV can't hold this format` : why,
+      setLanguage: s.languageFromTitle ? (s.language ?? undefined) : undefined,
     });
   }
 
@@ -303,8 +326,13 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
     }
   }
 
-  const englishAudio = keep.some((a) => a.language === "eng");
-  const englishSubs = keptSubs.some((s) => s.language === "eng");
+  const englishAudio = keep.some(
+    (a) =>
+      a.language === "eng" ||
+      (a.language === null &&
+        (labelAs === "eng" || originalLanguage === "eng" || originalLanguage === null)),
+  );
+  const englishSubs = keptSubs.some((s) => s.language === "eng" || s.language === null);
   if (!englishAudio && !englishSubs) {
     notes.push(
       "No English audio or subtitles inside the file (Bazarr may add an .srt next to it).",
