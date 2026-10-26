@@ -350,3 +350,41 @@ describe("forced subtitles", () => {
     expect(r.plan?.tracks.find((t) => t.index === 3)?.reason).toMatch(/Italian forced subtitles/);
   });
 });
+
+describe("one audio track per language", () => {
+  it("keeps the TrueHD mix and drops the AC3 copy of it", () => {
+    const r = run(
+      probe([
+        video("h264", 1920, 1080, { tags: { BPS: "30000000" } }),
+        audio("truehd", 6, "eng", undefined, { isDefault: true }),
+        audio("ac3", 6, "eng", "AC-3 5.1", { bit_rate: "640000" }),
+      ]),
+    );
+    expect(actions(r.plan?.tracks ?? [])).toEqual({ 1: "convert:E-AC3 5.1 · 640 kb/s", 2: "drop" });
+    expect(r.plan?.tracks.find((t) => t.index === 2)?.reason).toBe(
+      "Another English track is kept (TrueHD 5.1)",
+    );
+  });
+
+  it("prefers surround over stereo, per language, and keeps every unlabelled track", () => {
+    const r = run(
+      probe([
+        video("h264", 1920, 1080, { tags: { BPS: "9000000" } }),
+        audio("aac", 2, "kor", undefined, { isDefault: true }),
+        audio("ac3", 6, "kor"),
+        audio("aac", 2, "eng"),
+        audio("aac", 2),
+        audio("aac", 2),
+      ]),
+      "kor",
+    );
+    expect(actions(r.plan?.tracks ?? [])).toEqual({
+      1: "drop",
+      2: "keep",
+      3: "keep",
+      4: "keep",
+      5: "keep",
+    });
+    expect(r.plan?.tracks.find((t) => t.index === 2)?.makeDefault).toBe(true);
+  });
+});

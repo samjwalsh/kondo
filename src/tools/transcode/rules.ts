@@ -137,6 +137,27 @@ function describeSubtitle(s: SubtitleInfo): string {
   return `${languageName(s.language)} · ${SUB_NAMES[s.codec] ?? s.codec}${flags ? ` (${flags})` : ""}${quoted(s.title)}`;
 }
 
+/** How good a source an audio track is: lossless beats lossy, then the bigger lossy formats. */
+function audioQuality(a: AudioInfo): number {
+  if (["truehd", "flac", "alac", "mlp"].includes(a.codec) || a.codec.startsWith("pcm_")) return 5;
+  if (a.codec === "dts") return a.profile?.includes("MA") ? 5 : a.profile?.includes("HRA") ? 4 : 3;
+  if (a.codec === "eac3") return 3;
+  if (a.codec === "ac3" || a.codec === "opus") return 2;
+  if (a.codec === "aac") return 1;
+  return 0;
+}
+
+/** Positive when `a` is the better track to keep: more channels, then a better source. */
+function compareAudio(a: AudioInfo, b: AudioInfo): number {
+  return (
+    Math.min(a.channels, 6) - Math.min(b.channels, 6) ||
+    audioQuality(a) - audioQuality(b) ||
+    (a.kbps ?? 0) - (b.kbps ?? 0) ||
+    Number(a.isDefault) - Number(b.isDefault) ||
+    b.index - a.index
+  );
+}
+
 interface AudioOutput {
   to: string | null;
   kbps: number;
@@ -180,7 +201,17 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
   const wanted = usable.filter(
     (a) => a.language === "eng" || a.language === null || a.language === original,
   );
-  let keep = wanted;
+  // One track per known language, the best one (unlabelled tracks are all kept).
+  const bestByLanguage = new Map<string, AudioInfo>();
+  for (const a of wanted) {
+    if (a.language === null) continue;
+    const current = bestByLanguage.get(a.language);
+    if (!current || compareAudio(a, current) > 0) bestByLanguage.set(a.language, a);
+  }
+  const duplicates = new Set(
+    wanted.filter((a) => a.language !== null && bestByLanguage.get(a.language) !== a),
+  );
+  let keep = wanted.filter((a) => !duplicates.has(a));
   let fallback = false;
   if (keep.length === 0) {
     const main =
@@ -245,11 +276,15 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
       if (out.to && /atmos/i.test(summary))
         notes.push(`Atmos is lost converting ${audioCodecName(a)} to E-AC3.`);
     } else {
-      const reason = a.commentary
-        ? "Commentary"
-        : a.descriptive
-          ? "Audio description"
-          : `${languageName(a.language)}, not English${original ? ` or ${languageName(original)}` : ""}`;
+      const better = a.language === null ? undefined : bestByLanguage.get(a.language);
+      const reason =
+        duplicates.has(a) && better
+          ? `Another ${languageName(a.language)} track is kept (${audioCodecName(better)} ${channelsName(better.channels)})`
+          : a.commentary
+            ? "Commentary"
+            : a.descriptive
+              ? "Audio description"
+              : `${languageName(a.language)}, not English${original ? ` or ${languageName(original)}` : ""}`;
       tracks.push({ index: a.index, kind: "audio", summary, action: "drop", reason });
     }
   }

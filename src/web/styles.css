@@ -613,13 +613,13 @@ textarea {
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
-.file-row {
+button.file-row {
   display: grid;
   grid-template-columns: minmax(0, 2.5fr) minmax(0, 1.4fr) auto;
   gap: 4px 14px;
   align-items: center;
   width: 100%;
-  padding: 10px 14px;
+  padding: 12px 16px;
   cursor: pointer;
 }
 .file-name {
@@ -640,7 +640,7 @@ textarea {
   grid-column: 1 / -1;
 }
 @media (max-width: 720px) {
-  .file-row {
+  button.file-row {
     grid-template-columns: minmax(0, 1fr);
   }
   .file-size {
@@ -650,7 +650,7 @@ textarea {
 
 .file-detail {
   border-top: 1px solid var(--border);
-  padding: 10px 14px 14px;
+  padding: 12px 16px 16px;
   overflow-x: auto;
 }
 .file-detail p {

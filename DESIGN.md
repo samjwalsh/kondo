@@ -137,7 +137,7 @@ track tags.
 | Track | Keep | Drop | Convert |
 |---|---|---|---|
 | Video | main video stream | cover-art images | → H.265 (8-bit or 10-bit to match source) |
-| Audio | English; untagged; original language; **always** the default track | commentary; audio description | lossless (TrueHD, DTS-HD, FLAC, PCM) and DTS → E-AC3 (5.1 @ 640k, stereo @ 224k; 7.1 → 5.1). AC3/E-AC3/AAC/Opus copied as-is |
+| Audio | English; untagged; original language — **one track per language**, the best (most channels, then best source); all untagged tracks | commentary; audio description; other languages; extra tracks in a language already kept (e.g. an AC3 copy of a TrueHD mix) | lossless (TrueHD, DTS-HD, FLAC, PCM) and DTS → E-AC3 (5.1 @ 640k, stereo @ 224k; 7.1 → 5.1). AC3/E-AC3/AAC/Opus copied as-is |
 | Subtitles | English (incl. SDH and forced); untagged | other languages, including their forced subtitles (those are for that language's speakers) | MP4 `mov_text` → SRT (MKV can't hold it); everything else copied |
 | Other | chapters; font attachments when styled (ASS) subs are kept | — | — |
 
