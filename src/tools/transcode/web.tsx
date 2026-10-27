@@ -148,6 +148,28 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
             ✓ Same length · ✓ {d.verify.audio.found} audio and {d.verify.subtitles.found} subtitle
             track(s) as planned · ✓ Plays cleanly
           </p>
+          <p className="small watch">
+            Watch:{" "}
+            <a
+              href={`/api/tools/transcode/files/${item.file.id}/original`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              original
+            </a>{" "}
+            ·{" "}
+            <a
+              href={`/api/tools/transcode/work/${item.file.id}/output.mkv`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Kondo's version
+            </a>{" "}
+            <span className="muted">
+              — browsers often can't play these; copy the link into VLC (Media → Open Network
+              Stream).
+            </span>
+          </p>
           <div className="frames">
             {d.frames.map((at, i) => (
               <figure key={at}>

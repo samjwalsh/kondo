@@ -413,6 +413,19 @@ input[aria-invalid="true"] {
   gap: 4px;
   margin-top: 6px;
 }
+.slot-job > span {
+  overflow-wrap: anywhere;
+}
+.card.wide {
+  grid-column: 1 / -1;
+}
+.pause-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
 
 .checks,
 .sessions,
@@ -461,9 +474,13 @@ input[aria-invalid="true"] {
 }
 .job-progress {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   font-size: 0.85rem;
+}
+.job-progress .progress {
+  flex: 1 1 160px;
 }
 .job-progress .muted {
   white-space: nowrap;

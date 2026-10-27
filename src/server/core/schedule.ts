@@ -14,6 +14,13 @@ export const scheduleSettings: SettingsSection = {
     "Heavy work runs in the night window. Idle mode also lets it run at other times, but only while nobody is watching.",
   fields: [
     {
+      key: "paused",
+      label: "Pause all work",
+      type: "boolean",
+      default: false,
+      help: "Nothing new starts, and anything running freezes where it is until you resume. Also on the dashboard.",
+    },
+    {
       key: "timeZone",
       label: "Time zone",
       type: "timezone",
@@ -203,6 +210,7 @@ export class Scheduler {
       idleMode: Boolean(s.idleMode),
       idleQuietMinutes: Number(s.idleQuietMinutes),
       localTime: clock.label,
+      paused: Boolean(s.paused),
     };
   }
 
@@ -211,8 +219,10 @@ export class Scheduler {
   }
 
   decide(slot: SlotId, force: boolean, now = new Date()): SlotDecision {
-    if (slot === "general") return { allowed: true, reason: "Always available" };
+    // Pausing beats everything, including "Encode now".
     const info = this.info(now);
+    if (info.paused) return { allowed: false, reason: "Paused by you" };
+    if (slot === "general") return { allowed: true, reason: "Always available" };
     const encoding = this.settings.values("encoding");
     const activity = this.plex.activity();
     return decideSlot(slot, {
@@ -239,7 +249,8 @@ export class Scheduler {
       this.window = { open: true, queuedAtStart: this.queuedCount(), workDone: false };
       this.missed = null;
     } else if (!open && this.window?.open) {
-      if (this.window.queuedAtStart > 0 && !this.window.workDone) {
+      // A window spent paused on purpose isn't a missed one.
+      if (this.window.queuedAtStart > 0 && !this.window.workDone && !this.info(now).paused) {
         this.missed = { endedAt: now.toISOString(), queued: this.queuedCount() };
       }
       this.window = { open: false, queuedAtStart: 0, workDone: false };
@@ -250,6 +261,7 @@ export class Scheduler {
     const decisions = JSON.stringify([
       this.decide("gpu", false, now),
       this.decide("cpu", false, now),
+      this.decide("general", false, now),
     ]);
     if (decisions !== this.lastDecisions) {
       this.lastDecisions = decisions;

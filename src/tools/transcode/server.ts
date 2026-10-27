@@ -1,7 +1,7 @@
-import { createReadStream } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Lock } from "../../server/core/lock.js";
+import { sendFile } from "../../server/core/sendFile.js";
 import { defineTool, type Integrations } from "../../server/core/tools.js";
 import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
@@ -374,29 +374,25 @@ export default defineTool({
         return outcome;
       });
 
-      // Comparison frames: /work/12/frame-source-0.jpg
+      // Comparison frames and the result itself: /work/12/frame-source-0.jpg, /work/12/output.mkv
       app.get<{ Params: { id: string; name: string } }>(
         "/work/:id/:name",
         async (request, reply) => {
           const { id, name } = request.params;
-          if (!/^\d+$/.test(id) || !/^frame-(source|output)-\d\.jpg$/.test(name)) {
+          if (!/^\d+$/.test(id) || !/^(frame-(source|output)-\d\.jpg|output\.mkv)$/.test(name)) {
             return reply.code(404).send({ error: "Not found" });
           }
-          const file = path.join(workDirFor(workRoot, Number(id)), name);
-          if (
-            !(await stat(file).then(
-              (s) => s.isFile(),
-              () => false,
-            ))
-          ) {
-            return reply.code(404).send({ error: "Not found" });
-          }
-          return reply
-            .type("image/jpeg")
-            .header("cache-control", "private, max-age=3600")
-            .send(createReadStream(file));
+          if (name.endsWith(".jpg")) reply.header("cache-control", "private, max-age=3600");
+          return sendFile(request, reply, path.join(workDirFor(workRoot, Number(id)), name));
         },
       );
+
+      // The original, to compare against the result (read only).
+      app.get<{ Params: { id: string } }>("/files/:id/original", async (request, reply) => {
+        const file = store.detail(Number(request.params.id));
+        if (!file) return reply.code(404).send({ error: "No such file" });
+        return sendFile(request, reply, path.join(file.root, file.path));
+      });
     });
 
     ctx.setCard(() => {
