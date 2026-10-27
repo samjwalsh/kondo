@@ -542,6 +542,18 @@ export default defineTool({
         return reply.code(202).send(job);
       });
 
+      // Forget a failed, rejected or not-worth-it result so the file is offered again.
+      app.post<{ Params: { id: string } }>("/files/:id/retry", async (request, reply) => {
+        const id = Number(request.params.id);
+        const status = store.outcome(id)?.status;
+        if (status !== "failed" && status !== "rejected" && status !== "not-worth-it") {
+          return reply.code(409).send({ error: "There's no result here to try again" });
+        }
+        store.forgetOutcome(id);
+        // The scan decides the file afresh; the feeder then picks it up in its turn.
+        return reply.code(202).send(scan());
+      });
+
       app.get("/approvals", async () => store.approvals());
 
       // The permanent history, newest first; `before` pages back.
