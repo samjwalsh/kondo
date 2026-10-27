@@ -1,16 +1,20 @@
 import type { Db, Migration } from "../../server/core/db.js";
 import { transaction } from "../../server/core/db.js";
 import { extractMediaInfo, type Probe } from "./media.js";
-import type { Evaluation } from "./rules.js";
+import { type Evaluation, outcomeOverride } from "./rules.js";
 import {
+  type ApprovalItem,
   type ArrMatch,
   type Decision,
+  type EncodeDetails,
   type FileDetail,
   type FileFilter,
   type FileSort,
   type FileSummary,
   type FilesPage,
   type LibrarySummary,
+  type Outcome,
+  type OutcomeStatus,
   REASON_LABELS,
   type ReasonCode,
   type ScanInfo,
@@ -53,7 +57,31 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE transcode_outcomes (
+        file_id INTEGER PRIMARY KEY REFERENCES transcode_files (id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        encoder TEXT,
+        output_path TEXT,
+        output_bytes INTEGER,
+        details TEXT,
+        error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX transcode_outcomes_by_status ON transcode_outcomes (status);
+    `,
+  },
 ];
+
+/** Dedupe key of the encode job for a file (also used to find it in the core jobs table). */
+export const encodeKey = (fileId: number) => `transcode:encode:${fileId}`;
+
+const ACTIVE_ENCODE = `EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = 'transcode:encode:' || f.id
+  AND j.state IN ('queued', 'running', 'paused'))`;
 
 export interface FoundFile {
   root: string;
@@ -82,8 +110,25 @@ function toSummary(row: Row): FileSummary {
     reasonCode: str(row.reason_code) as ReasonCode | null,
     reason: str(row.reason),
     estimatedBytes: num(row.est_bytes),
+    outcomeStatus: str(row.outcome_status) as OutcomeStatus | null,
   };
 }
+
+function toOutcome(row: Row): Outcome {
+  return {
+    fileId: Number(row.file_id),
+    status: String(row.status) as OutcomeStatus,
+    encoder: str(row.encoder),
+    outputBytes: num(row.output_bytes),
+    details: row.details === null ? null : (JSON.parse(String(row.details)) as EncodeDetails),
+    error: str(row.error),
+    attempts: Number(row.attempts),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+const SUMMARY_COLUMNS = `f.id, f.path, f.root, f.size, f.video_codec, f.width, f.height, f.video_kbps, f.decision,
+  f.reason_code, f.reason, f.est_bytes, o.status AS outcome_status`;
 
 const SORTS: Record<FileSort, string> = {
   saving: "(size - COALESCE(est_bytes, size)) DESC, size DESC",
@@ -124,6 +169,7 @@ export class LibraryStore {
         `UPDATE transcode_files SET size = ?, mtime_ms = ?, seen_at = ?, root = ?, probe = NULL, probe_error = NULL,
          probed_at = NULL, decision = NULL, reason_code = NULL, reason = NULL, plan = NULL, est_bytes = NULL WHERE id = ?`,
       );
+      const forget = this.db.prepare("DELETE FROM transcode_outcomes WHERE file_id = ?");
       let added = 0;
       let modified = 0;
       for (const [path, f] of found) {
@@ -133,6 +179,7 @@ export class LibraryStore {
           added++;
         } else if (old.size !== f.size || old.mtime !== f.mtimeMs) {
           changed.run(f.size, f.mtimeMs, seenAt, f.root, old.id);
+          forget.run(old.id);
           modified++;
         } else {
           touch.run(seenAt, f.root, old.id);
@@ -160,15 +207,33 @@ export class LibraryStore {
   }
 
   /** Rows that have been read (successfully or not), for deciding. */
-  forDecision(): { id: number; path: string; root: string; probe: Probe | null }[] {
+  forDecision(): {
+    id: number;
+    path: string;
+    root: string;
+    probe: Probe | null;
+    outcome: Pick<Outcome, "status" | "error" | "attempts"> | null;
+  }[] {
     return this.db
-      .prepare("SELECT id, path, root, probe FROM transcode_files WHERE probed_at IS NOT NULL")
+      .prepare(
+        `SELECT f.id, f.path, f.root, f.probe, o.status, o.error, o.attempts
+         FROM transcode_files f LEFT JOIN transcode_outcomes o ON o.file_id = f.id
+         WHERE f.probed_at IS NOT NULL`,
+      )
       .all()
       .map((r) => ({
         id: Number(r.id),
         path: String(r.path),
         root: String(r.root),
         probe: r.probe === null ? null : (JSON.parse(String(r.probe)) as Probe),
+        outcome:
+          r.status === null
+            ? null
+            : {
+                status: String(r.status) as OutcomeStatus,
+                error: str(r.error),
+                attempts: Number(r.attempts),
+              },
       }));
   }
 
@@ -214,6 +279,7 @@ export class LibraryStore {
       skipped: { count: 0, bytes: 0 },
       problems: 0,
       notYetRead: 0,
+      awaitingApproval: this.countOutcomes(["awaiting-approval"]),
       byReason: [],
       lastScan: this.lastScan(),
     };
@@ -270,8 +336,8 @@ export class LibraryStore {
     );
     const files = this.db
       .prepare(
-        `SELECT id, path, root, size, video_codec, width, height, video_kbps, decision, reason_code, reason, est_bytes
-         FROM transcode_files ${clause} ORDER BY ${SORTS[options.sort]} LIMIT ? OFFSET ?`,
+        `SELECT ${SUMMARY_COLUMNS} FROM transcode_files f LEFT JOIN transcode_outcomes o ON o.file_id = f.id
+         ${clause} ORDER BY ${SORTS[options.sort]} LIMIT ? OFFSET ?`,
       )
       .all(...params, options.limit, options.offset)
       .map(toSummary);
@@ -279,16 +345,151 @@ export class LibraryStore {
   }
 
   detail(id: number): FileDetail | null {
-    const row = this.db.prepare("SELECT * FROM transcode_files WHERE id = ?").get(id);
+    const row = this.db
+      .prepare(
+        `SELECT f.*, o.status AS outcome_status, ${ACTIVE_ENCODE} AS encoding
+         FROM transcode_files f LEFT JOIN transcode_outcomes o ON o.file_id = f.id WHERE f.id = ?`,
+      )
+      .get(id);
     if (!row) return null;
     return {
       ...toSummary(row),
+      outcome: this.outcome(id),
+      encoding: Boolean(row.encoding),
       info: row.probe === null ? null : extractMediaInfo(JSON.parse(String(row.probe)) as Probe),
       plan: row.plan === null ? null : JSON.parse(String(row.plan)),
       arr: row.arr === null ? null : JSON.parse(String(row.arr)),
       probeError: str(row.probe_error),
       probedAt: str(row.probed_at),
     };
+  }
+
+  /** Size and modification time recorded by the last scan. */
+  sourceState(id: number): { size: number; mtimeMs: number } | null {
+    const row = this.db.prepare("SELECT size, mtime_ms FROM transcode_files WHERE id = ?").get(id);
+    return row ? { size: Number(row.size), mtimeMs: Number(row.mtime_ms) } : null;
+  }
+
+  outcome(fileId: number): Outcome | null {
+    const row = this.db.prepare("SELECT * FROM transcode_outcomes WHERE file_id = ?").get(fileId);
+    return row ? toOutcome(row) : null;
+  }
+
+  /** Records an encode result; results that rule a file out also update its decision. */
+  saveOutcome(
+    fileId: number,
+    outcome: {
+      status: OutcomeStatus;
+      encoder?: string | null;
+      outputPath?: string | null;
+      outputBytes?: number | null;
+      details?: EncodeDetails | null;
+      error?: string | null;
+    },
+  ): Outcome {
+    const now = new Date().toISOString();
+    const previous = this.outcome(fileId);
+    const attempts = (previous?.attempts ?? 0) + (outcome.status === "failed" ? 1 : 0);
+    this.db
+      .prepare(
+        `INSERT INTO transcode_outcomes (file_id, status, encoder, output_path, output_bytes, details, error, attempts, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (file_id) DO UPDATE SET status = excluded.status, encoder = excluded.encoder,
+           output_path = excluded.output_path, output_bytes = excluded.output_bytes, details = excluded.details,
+           error = excluded.error, attempts = excluded.attempts, updated_at = excluded.updated_at`,
+      )
+      .run(
+        fileId,
+        outcome.status,
+        outcome.encoder ?? null,
+        outcome.outputPath ?? null,
+        outcome.outputBytes ?? null,
+        outcome.details ? JSON.stringify(outcome.details) : null,
+        outcome.error ?? null,
+        attempts,
+        now,
+        now,
+      );
+    const saved = this.outcome(fileId) as Outcome;
+    const override = outcomeOverride(saved);
+    if (override) {
+      this.db
+        .prepare(
+          "UPDATE transcode_files SET decision = ?, reason_code = ?, reason = ? WHERE id = ?",
+        )
+        .run(override.decision, override.reasonCode, override.reason, fileId);
+    }
+    return saved;
+  }
+
+  setOutcomeStatus(fileId: number, status: OutcomeStatus): Outcome | null {
+    const current = this.outcome(fileId);
+    if (!current) return null;
+    return this.saveOutcome(fileId, {
+      status,
+      encoder: current.encoder,
+      outputPath: status === "rejected" ? null : this.outputPath(fileId),
+      outputBytes: current.outputBytes,
+      details: current.details,
+      error: current.error,
+    });
+  }
+
+  outputPath(fileId: number): string | null {
+    const row = this.db
+      .prepare("SELECT output_path FROM transcode_outcomes WHERE file_id = ?")
+      .get(fileId);
+    return row ? str(row.output_path) : null;
+  }
+
+  countOutcomes(statuses: OutcomeStatus[]): number {
+    const placeholders = statuses.map(() => "?").join(", ");
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM transcode_outcomes WHERE status IN (${placeholders})`)
+      .get(...statuses);
+    return Number(row?.n ?? 0);
+  }
+
+  /** File ids that still have results on disk (waiting or approved). */
+  idsWithResults(): Set<number> {
+    return new Set(
+      this.db
+        .prepare(
+          "SELECT file_id FROM transcode_outcomes WHERE status IN ('awaiting-approval', 'approved')",
+        )
+        .all()
+        .map((r) => Number(r.file_id)),
+    );
+  }
+
+  approvals(): ApprovalItem[] {
+    return this.db
+      .prepare(
+        `SELECT ${SUMMARY_COLUMNS}, f.plan FROM transcode_files f JOIN transcode_outcomes o ON o.file_id = f.id
+         WHERE o.status IN ('awaiting-approval', 'approved') ORDER BY o.updated_at`,
+      )
+      .all()
+      .map((row) => ({
+        file: toSummary(row),
+        outcome: this.outcome(Number(row.id)) as Outcome,
+        plan: row.plan === null ? null : JSON.parse(String(row.plan)),
+      }));
+  }
+
+  /**
+   * The next files to encode: marked for transcoding, not already queued, and either never
+   * tried or failed once. Biggest saving first.
+   */
+  nextCandidates(limit: number): { id: number; path: string }[] {
+    return this.db
+      .prepare(
+        `SELECT f.id, f.path FROM transcode_files f LEFT JOIN transcode_outcomes o ON o.file_id = f.id
+         WHERE f.decision = 'transcode' AND (o.file_id IS NULL OR (o.status = 'failed' AND o.attempts < 2))
+           AND NOT ${ACTIVE_ENCODE}
+         ORDER BY (f.size - COALESCE(f.est_bytes, f.size)) DESC LIMIT ?`,
+      )
+      .all(limit)
+      .map((r) => ({ id: Number(r.id), path: String(r.path) }));
   }
 
   startScan(): number {

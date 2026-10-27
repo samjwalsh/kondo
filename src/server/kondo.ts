@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { statfs } from "node:fs/promises";
+import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, LogController } from "fastify";
 import type { ToolCard } from "../shared/api.js";
@@ -112,6 +113,8 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
   for (const tool of tools) {
     await registerTool(tool, {
       app,
+      dataDir: config.dataDir,
+      version: config.version,
       db,
       settings,
       events,
@@ -179,6 +182,8 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
 
 interface ToolDeps {
   app: FastifyInstance;
+  dataDir: string;
+  version: string;
   db: Db;
   settings: SettingsStore;
   events: EventBus;
@@ -238,6 +243,7 @@ class RepeatingTasks {
 }
 
 async function registerTool(tool: ToolDefinition, deps: ToolDeps): Promise<void> {
+  mkdirSync(path.join(deps.dataDir, "tools", tool.id), { recursive: true });
   for (const section of tool.settings ?? []) {
     assertToolScope(tool, section);
     deps.settings.register(section);
@@ -246,6 +252,8 @@ async function registerTool(tool: ToolDefinition, deps: ToolDeps): Promise<void>
   const routes: ((app: FastifyInstance) => void | Promise<void>)[] = [];
   const ctx: ToolContext = {
     toolId: tool.id,
+    dataDir: path.join(deps.dataDir, "tools", tool.id),
+    version: deps.version,
     db: deps.db,
     settings: deps.settings,
     events: deps.events,
@@ -256,6 +264,7 @@ async function registerTool(tool: ToolDefinition, deps: ToolDeps): Promise<void>
     defineJob: (type, def) => deps.jobs.define(tool.id, type, def),
     enqueue: (type, payload, options) => deps.jobs.enqueue(tool.id, type, payload, options),
     listJobs: (limit) => deps.jobs.list({ tool: tool.id, limit }),
+    activeJobs: (type) => deps.jobs.activeCount(tool.id, type),
     addHealthCheck: (def) => deps.health.register({ ...def, id: `${tool.id}.${def.id}` }),
     routes: (register) => routes.push(register),
     every: (intervalMs, task, firstAfterMs) => deps.repeating.add(intervalMs, task, firstAfterMs),
@@ -303,7 +312,11 @@ function registerCoreChecks(d: CoreCheckDeps): void {
           message: "Not set up yet. Encoding waits until Kondo can see who's watching.",
         };
       }
-      if (!a.reachable) return { status: "error", message: `Can't reach Plex: ${a.error}` };
+      // Right after start-up the first check hasn't answered yet; that isn't a failure.
+      if (!a.checkedAt) return { status: "ok", message: "Checking…" };
+      if (!a.reachable) {
+        return { status: "error", message: `Can't reach Plex: ${a.error ?? "no answer"}` };
+      }
       const n = a.sessions.length;
       return {
         status: "ok",

@@ -8,7 +8,7 @@ import { errorMessage } from "../../server/integrations/http.js";
 import { splitLines } from "../../shared/settings.js";
 import { languageFromName } from "./languages.js";
 import { extractMediaInfo, type Probe } from "./media.js";
-import { evaluate, type RuleSettings } from "./rules.js";
+import { evaluate, outcomeOverride, type RuleSettings } from "./rules.js";
 import type { ArrMatch } from "./shared.js";
 import type { FoundFile, LibraryStore } from "./store.js";
 
@@ -273,7 +273,9 @@ export async function decideAll(
     const batch = rows.slice(i, i + 500).map((row) => {
       const match = matchArr(row.path, row.root, arr);
       const info = row.probe ? extractMediaInfo(row.probe) : null;
-      const evaluation = evaluate(info, match?.originalLanguage ?? null, rules);
+      // A remembered result (not worth it, rejected, failed twice) wins over the rules.
+      const evaluation =
+        outcomeOverride(row.outcome) ?? evaluate(info, match?.originalLanguage ?? null, rules);
       if (evaluation.decision === "transcode") toTranscode++;
       return { id: row.id, evaluation, arr: match, probe: row.probe };
     });

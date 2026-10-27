@@ -118,7 +118,8 @@ class ActiveJob {
 
   stop(reason: "cancel" | "shutdown"): void {
     this.stopReason = reason;
-    this.controller.abort();
+    // Jobs can read signal.reason: "cancel" (by a person) or "shutdown" (Kondo restarting).
+    this.controller.abort(reason);
     // A frozen process can't act on SIGTERM until it's continued.
     this.resume();
     for (const p of this.processes) {
@@ -219,6 +220,16 @@ export class JobQueue {
           .all(options.tool, limit)
       : this.db.prepare("SELECT * FROM jobs ORDER BY id DESC LIMIT ?").all(limit);
     return rows.map(toJob);
+  }
+
+  /** Jobs of one tool/type that are queued, running or paused. */
+  activeCount(tool: string, type: string): number {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE tool = ? AND type = ? AND state IN ('queued', 'running', 'paused')",
+      )
+      .get(tool, type);
+    return Number(row?.n ?? 0);
   }
 
   queuedCount(slots: SlotId[]): number {
@@ -492,7 +503,7 @@ export class JobQueue {
     this.db
       .prepare(
         `UPDATE jobs SET state = ?, result = ?, error = ?, finished_at = ?, updated_at = ?,
-         progress = CASE WHEN ? = 'succeeded' THEN 1 ELSE progress END WHERE id = ?`,
+         progress = CASE WHEN ? = 'succeeded' THEN 1 ELSE progress END, progress_text = NULL WHERE id = ?`,
       )
       .run(
         state,

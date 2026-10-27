@@ -1,9 +1,12 @@
-import { stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { readdir, rm, stat } from "node:fs/promises";
+import path from "node:path";
 import { defineTool } from "../../server/core/tools.js";
 import type { SettingsSection } from "../../shared/settings.js";
+import { type EncodePayload, type EncodeResult, runEncode, workDirFor } from "./encode.js";
 import { librarySettings, runScan } from "./scan.js";
 import type { FileFilter, FileSort } from "./shared.js";
-import { LibraryStore, migrations } from "./store.js";
+import { encodeKey, LibraryStore, migrations } from "./store.js";
 
 export const transcodeSettings: SettingsSection = {
   scope: "transcode",
@@ -62,6 +65,34 @@ export const transcodeSettings: SettingsSection = {
       min: 10,
       max: 1440,
     },
+    {
+      key: "mode",
+      label: "Encoding",
+      type: "select",
+      default: "off",
+      options: [
+        { value: "off", label: "Off: only show what Kondo would do" },
+        { value: "approval", label: "On: encode, then wait for my approval" },
+      ],
+      help: "Encodes run in the night window (and idle mode). Results wait in Kondo's own folder; the library isn't touched.",
+    },
+    {
+      key: "maxWaiting",
+      label: "Encode at most this many ahead of approval",
+      type: "number",
+      default: 10,
+      min: 1,
+      max: 100,
+      help: "Counts finished results waiting for you plus encodes queued or running.",
+    },
+    {
+      key: "minSavingsPercent",
+      label: "Keep a result only if it's at least this much smaller (%)",
+      type: "number",
+      default: 20,
+      min: 1,
+      max: 90,
+    },
   ],
 };
 
@@ -81,13 +112,78 @@ export default defineTool({
 
   register(ctx) {
     const store = new LibraryStore(ctx.db);
+    const workRoot = path.join(ctx.dataDir, "work");
     const scan = () => ctx.enqueue("scan", {}, { dedupeKey: "transcode:scan" });
+
+    /** Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. */
+    const feed = () => {
+      const v = ctx.settings.values("transcode");
+      if (v.mode !== "approval") return;
+      let free =
+        Number(v.maxWaiting) -
+        store.countOutcomes(["awaiting-approval", "approved"]) -
+        ctx.activeJobs("encode");
+      if (free <= 0) return;
+      for (const file of store.nextCandidates(free)) {
+        ctx.enqueue<EncodePayload>(
+          "encode",
+          { fileId: file.id, name: path.basename(file.path) },
+          { dedupeKey: encodeKey(file.id) },
+        );
+        free--;
+      }
+    };
+
+    /** Removes work folders that no result or running encode needs any more. */
+    const sweep = async () => {
+      const keep = store.idsWithResults();
+      for (const name of await readdir(workRoot).catch(() => [] as string[])) {
+        const id = Number(name);
+        if (!Number.isInteger(id) || keep.has(id) || store.detail(id)?.encoding) continue;
+        await rm(path.join(workRoot, name), { recursive: true, force: true });
+      }
+    };
 
     ctx.defineJob<Record<string, never>, unknown>("scan", {
       slot: "general",
       title: () => "Scan the library",
-      run: (job) => runScan(job, { store, settings: ctx.settings, integrations: ctx.integrations }),
+      run: async (job) => {
+        const result = await runScan(job, {
+          store,
+          settings: ctx.settings,
+          integrations: ctx.integrations,
+        });
+        feed();
+        return result;
+      },
     });
+
+    ctx.defineJob<EncodePayload, EncodeResult>("encode", {
+      slot: "gpu",
+      title: (p) => `Transcode ${p.name}`,
+      run: (job) =>
+        runEncode(job, {
+          store,
+          settings: ctx.settings,
+          workRoot,
+          version: ctx.version,
+          encoder: "gpu",
+          onFinished: feed,
+        }),
+      // Interrupted by a restart: throw away the partial result; it's encoded again.
+      recover: async (_job, payload) => {
+        await rm(workDirFor(workRoot, payload.fileId), { recursive: true, force: true });
+      },
+    });
+
+    ctx.every(
+      () => 5 * 60_000,
+      async () => {
+        await sweep();
+        feed();
+      },
+      15_000,
+    );
 
     ctx.every(
       () => Number(ctx.settings.values("transcode").scanEveryMinutes) * 60_000,
@@ -98,7 +194,10 @@ export default defineTool({
     );
     // New folders or thresholds: look again (unchanged files aren't re-read).
     ctx.events.subscribe((event) => {
-      if (event.type === "settings.changed" && event.scope === "transcode") scan();
+      if (event.type === "settings.changed" && event.scope === "transcode") {
+        scan();
+        feed();
+      }
     });
 
     ctx.addHealthCheck({
@@ -152,6 +251,67 @@ export default defineTool({
       });
 
       app.post("/scan", async (_request, reply) => reply.code(202).send(scan()));
+
+      // Encode one file now, outside the night window (it still gives way to Plex).
+      app.post<{ Params: { id: string } }>("/files/:id/encode", async (request, reply) => {
+        const file = store.detail(Number(request.params.id));
+        if (!file) return reply.code(404).send({ error: "No such file" });
+        if (file.decision !== "transcode") {
+          return reply.code(409).send({ error: "This file isn't marked for transcoding" });
+        }
+        const job = ctx.enqueue<EncodePayload>(
+          "encode",
+          { fileId: file.id, name: path.basename(file.path) },
+          { dedupeKey: encodeKey(file.id), force: true, priority: 10 },
+        );
+        return reply.code(202).send(job);
+      });
+
+      app.get("/approvals", async () => store.approvals());
+
+      app.post<{ Params: { id: string } }>("/approvals/:id/approve", async (request, reply) => {
+        const id = Number(request.params.id);
+        if (store.outcome(id)?.status !== "awaiting-approval") {
+          return reply.code(409).send({ error: "Nothing waiting for approval here" });
+        }
+        return store.setOutcomeStatus(id, "approved");
+      });
+
+      app.post<{ Params: { id: string } }>("/approvals/:id/reject", async (request, reply) => {
+        const id = Number(request.params.id);
+        const status = store.outcome(id)?.status;
+        if (status !== "awaiting-approval" && status !== "approved") {
+          return reply.code(409).send({ error: "Nothing waiting for approval here" });
+        }
+        await rm(workDirFor(workRoot, id), { recursive: true, force: true });
+        const outcome = store.setOutcomeStatus(id, "rejected");
+        feed();
+        return outcome;
+      });
+
+      // Comparison frames: /work/12/frame-source-0.jpg
+      app.get<{ Params: { id: string; name: string } }>(
+        "/work/:id/:name",
+        async (request, reply) => {
+          const { id, name } = request.params;
+          if (!/^\d+$/.test(id) || !/^frame-(source|output)-\d\.jpg$/.test(name)) {
+            return reply.code(404).send({ error: "Not found" });
+          }
+          const file = path.join(workDirFor(workRoot, Number(id)), name);
+          if (
+            !(await stat(file).then(
+              (s) => s.isFile(),
+              () => false,
+            ))
+          ) {
+            return reply.code(404).send({ error: "Not found" });
+          }
+          return reply
+            .type("image/jpeg")
+            .header("cache-control", "private, max-age=3600")
+            .send(createReadStream(file));
+        },
+      );
     });
 
     ctx.setCard(() => {
@@ -168,6 +328,7 @@ export default defineTool({
         `${s.files.toLocaleString("en-GB")} videos (${terabytes(s.bytes)})`,
         `${s.toTranscode.count.toLocaleString("en-GB")} to transcode · about ${terabytes(saving)} to save`,
       ];
+      if (s.awaitingApproval > 0) lines.push(`${s.awaitingApproval} waiting for your approval`);
       if (s.notYetRead > 0) lines.push(`${s.notYetRead.toLocaleString("en-GB")} still to be read`);
       if (s.problems > 0) lines.push(`${s.problems} couldn't be read`);
       return { status: s.problems > 0 ? "warn" : "ok", lines };

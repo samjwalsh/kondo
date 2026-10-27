@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
 import { api } from "../../web/api.js";
 import { Card, JobList } from "../../web/components.js";
-import { ago, bytes, count } from "../../web/format.js";
+import { ago, bytes, count, duration } from "../../web/format.js";
 import { useApi } from "../../web/live.js";
-import type {
-  FileDetail,
-  FileFilter,
-  FileSort,
-  FileSummary,
-  FilesPage,
-  LibrarySummary,
-  PlannedTrack,
+import {
+  type ApprovalItem,
+  type FileDetail,
+  type FileFilter,
+  type FileSort,
+  type FileSummary,
+  type FilesPage,
+  type LibrarySummary,
+  OUTCOME_LABELS,
+  type PlannedTrack,
 } from "./shared.js";
 
 const PAGE = 50;
@@ -53,14 +55,15 @@ export function TranscodePage() {
         </button>
       </div>
       <p className="muted">
-        A dry run: this shows what Kondo would do to every file. Nothing is changed yet.
+        Encoded results wait here for your approval. Nothing in the library is changed yet.
       </p>
 
       {error && <p className="bad">{error}</p>}
+      <Approvals />
       {summary && <Summary summary={summary} onPick={pick} />}
 
-      <h2>Recent scans</h2>
-      <JobList tool="transcode" limit={3} empty="No scans yet." />
+      <h2>Recent work</h2>
+      <JobList tool="transcode" limit={5} empty="Nothing yet." />
 
       <h2>Files</h2>
       <FileBrowser
@@ -70,6 +73,127 @@ export function TranscodePage() {
         refreshKey={summary?.lastScan?.finishedAt ?? ""}
       />
     </>
+  );
+}
+
+const encodeFinished = (event: {
+  type: string;
+  job?: { tool: string; type: string; state: string };
+}) =>
+  event.type === "job.updated" &&
+  event.job?.tool === "transcode" &&
+  event.job.type === "encode" &&
+  (event.job.state === "succeeded" || event.job.state === "failed");
+
+function Approvals() {
+  const { data, reload } = useApi<ApprovalItem[]>("/api/tools/transcode/approvals", encodeFinished);
+  if (!data || data.length === 0) return null;
+  const waiting = data.filter((i) => i.outcome.status === "awaiting-approval").length;
+  return (
+    <section>
+      <h2>Waiting for your approval ({waiting})</h2>
+      <div className="approvals">
+        {data.map((item) => (
+          <ApprovalCard key={item.file.id} item={item} onChanged={() => void reload()} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+const clock = (seconds: number) =>
+  `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+
+function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [showPlan, setShowPlan] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const d = item.outcome.details;
+  const name = item.file.path.split("/").pop() ?? item.file.path;
+  const frame = (kind: "source" | "output", i: number) =>
+    `/api/tools/transcode/work/${item.file.id}/frame-${kind}-${i}.jpg`;
+
+  const act = async (action: "approve" | "reject") => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/api/tools/transcode/approvals/${item.file.id}/${action}`);
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="card approval">
+      <header className="approval-head">
+        <strong>{name}</strong>
+        <span className="muted small">{item.file.path.slice(0, -name.length - 1)}</span>
+      </header>
+      {d && (
+        <>
+          <p className="approval-size">
+            {bytes(d.sourceBytes)} → <strong>{bytes(d.outputBytes)}</strong>{" "}
+            <span className="good">{d.savingPercent}% smaller</span>
+          </p>
+          <p className="muted small">
+            {d.encoder}
+            {d.averageFps !== null && ` · ${d.averageFps} fps`} · took{" "}
+            {duration(d.encodeSeconds * 1000)}
+            {d.crop && ` · black bars cropped (${d.crop})`}
+          </p>
+          <p className="small">
+            ✓ Same length · ✓ {d.verify.audio.found} audio and {d.verify.subtitles.found} subtitle
+            track(s) as planned · ✓ Plays cleanly
+          </p>
+          <div className="frames">
+            {d.frames.map((at, i) => (
+              <figure key={at}>
+                <div className="pair">
+                  <a href={frame("source", i)} target="_blank" rel="noreferrer">
+                    <img src={frame("source", i)} alt={`Original at ${clock(at)}`} loading="lazy" />
+                  </a>
+                  <a href={frame("output", i)} target="_blank" rel="noreferrer">
+                    <img
+                      src={frame("output", i)}
+                      alt={`Kondo's version at ${clock(at)}`}
+                      loading="lazy"
+                    />
+                  </a>
+                </div>
+                <figcaption className="muted small">
+                  Original (left) and Kondo (right) at {clock(at)}
+                </figcaption>
+              </figure>
+            ))}
+          </div>
+        </>
+      )}
+      {item.outcome.status === "approved" ? (
+        <p className="good">Approved. It's swapped into the library once that step is built.</p>
+      ) : (
+        <div className="form-actions">
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={() => void act("approve")}
+          >
+            Approve
+          </button>
+          <button type="button" disabled={busy} onClick={() => void act("reject")}>
+            Reject
+          </button>
+          <button type="button" className="link small" onClick={() => setShowPlan(!showPlan)}>
+            {showPlan ? "Hide tracks" : "Show tracks"}
+          </button>
+          {error && <span className="bad">{error}</span>}
+        </div>
+      )}
+      {showPlan && <FileDetailView id={item.file.id} />}
+    </article>
   );
 }
 
@@ -321,7 +445,14 @@ function FileRow({
           <span className="good"> → {bytes(file.estimatedBytes)}</span>
         )}
       </span>
-      <span className="muted small file-reason">{file.reason}</span>
+      <span className="muted small file-reason">
+        {file.outcomeStatus && (
+          <span className={`pill outcome ${file.outcomeStatus}`}>
+            {OUTCOME_LABELS[file.outcomeStatus]}
+          </span>
+        )}{" "}
+        {file.reason}
+      </span>
     </button>
   );
 }
@@ -333,7 +464,26 @@ const ACTION_LABEL: Record<PlannedTrack["action"], string> = {
 };
 
 function FileDetailView({ id }: { id: number }) {
-  const { data: file, error } = useApi<FileDetail>(`/api/tools/transcode/files/${id}`);
+  const {
+    data: file,
+    error,
+    reload,
+  } = useApi<FileDetail>(
+    `/api/tools/transcode/files/${id}`,
+    (event) =>
+      event.type === "job.updated" && event.job.tool === "transcode" && event.job.type === "encode",
+  );
+  const [message, setMessage] = useState<string | null>(null);
+  const encodeNow = async () => {
+    setMessage(null);
+    try {
+      await api.post(`/api/tools/transcode/files/${id}/encode`);
+      setMessage("Queued. It starts straight away unless Plex needs the GPU.");
+      void reload();
+    } catch (e) {
+      setMessage((e as Error).message);
+    }
+  };
   if (error) return <p className="bad">{error}</p>;
   if (!file) return <p className="muted">Loading…</p>;
   const plan = file.plan;
@@ -360,6 +510,23 @@ function FileDetailView({ id }: { id: number }) {
         </strong>{" "}
         {file.reason}
       </p>
+      {file.outcome && (
+        <p className="small">
+          Result: <strong>{OUTCOME_LABELS[file.outcome.status]}</strong>
+          {file.outcome.error && ` — ${file.outcome.error}`}
+        </p>
+      )}
+      {file.encoding && <p className="small">Encoding is queued or running (see Recent work).</p>}
+      {file.decision === "transcode" &&
+        !file.encoding &&
+        (!file.outcome || file.outcome.status === "failed") && (
+          <div className="form-actions">
+            <button type="button" className="small" onClick={() => void encodeNow()}>
+              Encode now
+            </button>
+            {message && <span className="muted small">{message}</span>}
+          </div>
+        )}
       {plan && (
         <>
           <p className="small">

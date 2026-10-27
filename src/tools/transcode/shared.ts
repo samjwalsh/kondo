@@ -13,7 +13,10 @@ export type ReasonCode =
   | "no-video"
   | "unknown-codec"
   | "small-saving"
-  | "probe-failed";
+  | "probe-failed"
+  | "not-worth-it"
+  | "rejected"
+  | "encode-failed";
 
 export const REASON_LABELS: Record<ReasonCode, string> = {
   h264: "H.264 → H.265",
@@ -27,6 +30,9 @@ export const REASON_LABELS: Record<ReasonCode, string> = {
   "unknown-codec": "Video codec Kondo doesn't know",
   "small-saving": "Saving too small to be worth it",
   "probe-failed": "Couldn't read the file",
+  "not-worth-it": "Tried, but the result wasn't small enough",
+  rejected: "You rejected or cancelled it",
+  "encode-failed": "Encoding failed twice",
 };
 
 export type Hdr = "none" | "hdr10" | "hlg" | "dolby-vision";
@@ -133,6 +139,63 @@ export interface FileSummary {
   reasonCode: ReasonCode | null;
   reason: string | null;
   estimatedBytes: number | null;
+  outcomeStatus: OutcomeStatus | null;
+}
+
+export type OutcomeStatus =
+  | "awaiting-approval"
+  | "approved"
+  | "rejected"
+  | "not-worth-it"
+  | "failed";
+
+export const OUTCOME_LABELS: Record<OutcomeStatus, string> = {
+  "awaiting-approval": "Waiting for approval",
+  approved: "Approved",
+  rejected: "Rejected",
+  "not-worth-it": "Not worth it",
+  failed: "Failed",
+};
+
+export interface VerifyReport {
+  ok: boolean;
+  problems: string[];
+  sourceSeconds: number;
+  outputSeconds: number;
+  audio: { expected: number; found: number };
+  subtitles: { expected: number; found: number };
+  videoCodec: string | null;
+  decodeErrors: string[];
+}
+
+export interface EncodeDetails {
+  encoder: string;
+  encodeSeconds: number;
+  averageFps: number | null;
+  crop: string | null;
+  sourceBytes: number;
+  outputBytes: number;
+  savingPercent: number;
+  verify: VerifyReport;
+  /** Timestamps (s) of the comparison frames saved as frame-source-N.jpg / frame-output-N.jpg. */
+  frames: number[];
+}
+
+export interface Outcome {
+  fileId: number;
+  status: OutcomeStatus;
+  encoder: string | null;
+  outputBytes: number | null;
+  details: EncodeDetails | null;
+  error: string | null;
+  attempts: number;
+  updatedAt: string;
+}
+
+export interface ApprovalItem {
+  file: FileSummary;
+  outcome: Outcome;
+  plan: Plan | null;
 }
 
 export interface FileDetail extends FileSummary {
@@ -141,6 +204,9 @@ export interface FileDetail extends FileSummary {
   arr: ArrMatch | null;
   probeError: string | null;
   probedAt: string | null;
+  outcome: Outcome | null;
+  /** An encode job for this file is queued or running. */
+  encoding: boolean;
 }
 
 export interface ScanInfo {
@@ -160,6 +226,7 @@ export interface LibrarySummary {
   skipped: { count: number; bytes: number };
   problems: number;
   notYetRead: number;
+  awaitingApproval: number;
   byReason: { code: ReasonCode; label: string; count: number; bytes: number }[];
   lastScan: ScanInfo | null;
 }
