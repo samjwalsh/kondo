@@ -310,9 +310,12 @@ lists them without changing anything. Works whether or not the download is still
 Sonarr/Radarr queue. Results go to the Downloads page, the dashboard card and the morning
 summary (now a core feature that every tool adds lines to).
 
-Prevention outside Kondo: qBittorrent's excluded file names (same extensions) and a
-120-minute torrent delay profile in Sonarr, so RSS doesn't grab the first (often fake)
-release.
+It checks every 2 minutes and reads the file list as soon as qBittorrent has the
+torrent's metadata, so a fake is usually removed while it's still downloading. qBittorrent
+itself downloads any file type (it's also used for software by hand); only the `sonarr` and
+`radarr` categories are checked. Prevention outside Kondo: a 120-minute torrent delay profile
+in Sonarr and Radarr (bypass for highest quality off), so RSS doesn't grab the first, often
+fake, release.
 
 ## UI
 
