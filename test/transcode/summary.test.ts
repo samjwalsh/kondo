@@ -23,7 +23,7 @@ describe("morning summary", () => {
     const text = morningSummary(
       [entry("replaced"), entry("replaced"), entry("not-worth-it"), entry("failed")],
       state,
-    );
+    ).join("\n");
     expect(text).toBe(
       [
         "Kondo replaced 2 files, saving 6 GB (1.25 TB so far).",
@@ -34,7 +34,7 @@ describe("morning summary", () => {
   });
 
   it("mentions results waiting for approval, and nights with only problems", () => {
-    expect(morningSummary([entry("failed")], { ...state, awaitingApproval: 3 })).toBe(
+    expect(morningSummary([entry("failed")], { ...state, awaitingApproval: 3 }).join("\n")).toBe(
       [
         "Kondo didn't replace anything.",
         "1 failed. Details on the Transcode page.",
@@ -44,10 +44,10 @@ describe("morning summary", () => {
   });
 
   it("still checks in after a quiet night, with the reason when there's an obvious one", () => {
-    expect(morningSummary([], state)).toBe(
+    expect(morningSummary([], state).join("\n")).toBe(
       "Kondo is running; nothing was replaced.\n1,526 left to transcode.",
     );
-    expect(morningSummary([], { ...state, idleBecause: "paused" })).toBe(
+    expect(morningSummary([], { ...state, idleBecause: "paused" }).join("\n")).toBe(
       "Kondo is running; nothing was replaced (paused).\n1,526 left to transcode.",
     );
   });

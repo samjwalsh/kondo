@@ -121,4 +121,8 @@ export const coreMigrations: Migration[] = [
       CREATE INDEX job_logs_by_job ON job_logs (job_id, id);
     `,
   },
+  {
+    version: 2,
+    sql: `CREATE TABLE core_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
+  },
 ];

@@ -21,6 +21,13 @@ export const telegramSettings: SettingsSection = {
       type: "string",
       help: "Leave empty, send your bot any message, then press Test: Kondo finds and saves the chat ID.",
     },
+    {
+      key: "morningSummary",
+      label: "Send a short summary when the night window ends",
+      type: "boolean",
+      default: true,
+      help: "A few lines from each tool: what it did since the last one. Sent every day, so you know Kondo is running.",
+    },
   ],
 };
 

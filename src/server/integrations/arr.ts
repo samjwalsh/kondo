@@ -1,6 +1,6 @@
 import type { SettingsSection, TestResult } from "../../shared/settings.js";
 import type { SettingsStore } from "../core/settings.js";
-import { errorMessage, requestJson } from "./http.js";
+import { errorMessage, request, requestJson } from "./http.js";
 
 export type ArrApp = "sonarr" | "radarr";
 
@@ -31,6 +31,24 @@ export function arrSettings(app: ArrApp): SettingsSection {
   };
 }
 
+interface RawHistory {
+  id: number;
+  sourceTitle: string;
+  data?: { indexer?: string };
+  series?: { title: string };
+  episode?: { seasonNumber: number; episodeNumber: number };
+  movie?: { title: string };
+}
+
+export interface GrabRecord {
+  id: number;
+  /** The release name as grabbed. */
+  sourceTitle: string;
+  /** e.g. "NCIS S24E04" or a movie title. */
+  what: string;
+  indexer: string | null;
+}
+
 export class ArrClient {
   constructor(
     readonly app: ArrApp,
@@ -49,12 +67,19 @@ export class ArrClient {
     return requestJson<T>(this.url(path), { headers: this.headers() });
   }
 
-  async post<T>(path: string, body: unknown): Promise<T> {
-    return requestJson<T>(this.url(path), {
+  /** POSTs JSON; an empty reply (some endpoints send none) comes back as null. */
+  async post<T>(path: string, body: unknown): Promise<T | null> {
+    const response = await request(this.url(path), {
       method: "POST",
-      headers: { ...this.headers(), "content-type": "application/json" },
+      headers: {
+        ...this.headers(),
+        "content-type": "application/json",
+        accept: "application/json",
+      },
       body: JSON.stringify(body),
     });
+    const text = await response.text();
+    return text.trim() === "" ? null : (JSON.parse(text) as T);
   }
 
   /** Asks Sonarr to rescan a series (or Radarr a movie) so it picks up a replaced file. */
@@ -65,6 +90,35 @@ export class ArrClient {
         ? { name: "RescanSeries", seriesId: id }
         : { name: "RescanMovie", movieId: id },
     );
+  }
+
+  /** The record of when a download was grabbed, by the download client's id (torrent hash). */
+  async grabOf(downloadId: string): Promise<GrabRecord | null> {
+    const page = await this.get<{ records?: RawHistory[] }>(
+      `/history?downloadId=${encodeURIComponent(downloadId.toUpperCase())}&eventType=1&pageSize=5&${
+        this.app === "sonarr" ? "includeSeries=true&includeEpisode=true" : "includeMovie=true"
+      }`,
+    );
+    const r = page.records?.[0];
+    if (!r) return null;
+    const episode =
+      r.episode && r.series
+        ? `${r.series.title} S${String(r.episode.seasonNumber).padStart(2, "0")}E${String(r.episode.episodeNumber).padStart(2, "0")}`
+        : null;
+    return {
+      id: r.id,
+      sourceTitle: r.sourceTitle,
+      what: episode ?? r.movie?.title ?? r.series?.title ?? r.sourceTitle,
+      indexer: r.data?.indexer ?? null,
+    };
+  }
+
+  /**
+   * Marks a grabbed download as failed: the release is blocklisted and, with "Redownload Failed"
+   * on, Sonarr/Radarr look for another one straight away.
+   */
+  async markFailed(historyId: number): Promise<void> {
+    await this.post(`/history/failed/${historyId}`, {});
   }
 
   private url(path: string): string {
