@@ -18,6 +18,7 @@ import {
   type SquishRenameResult,
 } from "./squish.js";
 import { encodeKey, LibraryStore, migrations, swapKey } from "./store.js";
+import { morningSummary } from "./summary.js";
 import { runSwap, type SwapPayload, type SwapResult } from "./swap.js";
 
 export const transcodeSettings: SettingsSection = {
@@ -90,6 +91,13 @@ export const transcodeSettings: SettingsSection = {
       help: "Encodes run in the night window (and idle mode). With approval, results wait in Kondo's own folder until you approve them. Automatic also approves anything already waiting.",
     },
     {
+      key: "morningSummary",
+      label: "Send a short summary on Telegram when the night window ends",
+      type: "boolean",
+      default: true,
+      help: "A few lines: files replaced, space saved, anything that failed. Nothing is sent after a night with nothing to report.",
+    },
+    {
       key: "maxSwapsPerDay",
       label: "In automatic mode, swap in at most this many a day",
       type: "number",
@@ -156,6 +164,25 @@ async function rescan(
   }
   return lines;
 }
+
+const localDate = (now: Date, timeZone: string) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+const localClock = (now: Date, timeZone: string) =>
+  new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(now);
+const minutesOfDay = (clock: string) => {
+  const [h = 0, m = 0] = clock.split(":").map(Number);
+  return h * 60 + m;
+};
 
 function terabytes(bytes: number): string {
   return bytes >= 1e12 ? `${(bytes / 1e12).toFixed(1)} TB` : `${Math.round(bytes / 1e9)} GB`;
@@ -346,6 +373,36 @@ export default defineTool({
       },
     });
 
+    /** Once a day, when the night window ends, sends what happened since the last summary. */
+    const sendMorningSummary = async () => {
+      const telegram = ctx.integrations.telegram;
+      if (!ctx.settings.values("transcode").morningSummary || !telegram.configured()) return;
+      const info = ctx.scheduler.info();
+      const now = new Date();
+      const today = localDate(now, info.timeZone);
+      const sinceEnd = minutesOfDay(localClock(now, info.timeZone)) - minutesOfDay(info.windowEnd);
+      if (sinceEnd < 0 || store.meta<string>("summaryDate") === today) return;
+      store.setMeta("summaryDate", today);
+      // Kondo wasn't running at the time: skip today's rather than send it hours late.
+      if (sinceEnd > 120) return;
+      const since =
+        store.meta<string>("summarySince") ?? new Date(now.getTime() - 86_400_000).toISOString();
+      store.setMeta("summarySince", now.toISOString());
+      const s = store.summary(librarySettings(ctx.settings).roots);
+      const text = morningSummary(store.logEntries({ since, limit: 100_000 }), {
+        savedSoFar: s.done.savedBytes,
+        toTranscode: s.toTranscode.count,
+        awaitingApproval: s.awaitingApproval,
+      });
+      if (!text) return;
+      try {
+        await telegram.send(text);
+      } catch (error) {
+        ctx.log.warn({ err: errorMessage(error) }, "couldn't send the morning summary");
+      }
+    };
+    ctx.every(() => 60_000, sendMorningSummary, 60_000);
+
     ctx.every(
       () => 5 * 60_000,
       async () => {
@@ -480,9 +537,19 @@ export default defineTool({
 
       app.get("/approvals", async () => store.approvals());
 
-      app.get<{ Querystring: { limit?: string } }>("/history", async (request) =>
-        store.history(Math.min(Math.max(Number(request.query.limit) || 20, 1), RECENT_KEPT)),
-      );
+      // The permanent history, newest first; `before` pages back.
+      app.get<{ Querystring: { before?: string; limit?: string } }>("/log", async (request) => {
+        const kept = new Set(store.history(RECENT_KEPT).map((h) => h.fileId));
+        return store
+          .logEntries({
+            before: request.query.before || undefined,
+            limit: Math.min(Math.max(Number(request.query.limit) || 200, 1), 1000),
+          })
+          .map((entry) => ({
+            ...entry,
+            framesKept: entry.kind === "replaced" && kept.has(entry.fileId),
+          }));
+      });
 
       app.post<{ Params: { id: string } }>("/approvals/:id/approve", async (request, reply) => {
         const id = Number(request.params.id);

@@ -10,8 +10,10 @@ import {
   type FileSort,
   type FileSummary,
   type FilesPage,
-  type HistoryItem,
   type LibrarySummary,
+  LOG_LABELS,
+  type LogEntry,
+  type LogKind,
   OUTCOME_LABELS,
   type PlannedTrack,
   type SquishItem,
@@ -65,7 +67,7 @@ export function TranscodePage() {
 
       {error && <p className="bad">{error}</p>}
       <Approvals />
-      <RecentlyReplaced />
+      <History />
       {summary && <Summary summary={summary} onPick={pick} />}
 
       <h2>Recent work</h2>
@@ -140,15 +142,6 @@ function Frames({ fileId, times }: { fileId: number; times: number[] }) {
     </div>
   );
 }
-
-const swapFinished = (event: {
-  type: string;
-  job?: { tool: string; type: string; state: string };
-}) =>
-  event.type === "job.updated" &&
-  event.job?.tool === "transcode" &&
-  event.job.type === "swap" &&
-  event.job.state === "succeeded";
 
 const squishJobChanged = (event: {
   type: string;
@@ -283,38 +276,140 @@ const SQUISH_STATUS: Record<SquishItem["status"], string> = {
   error: "failed",
 };
 
-function RecentlyReplaced() {
-  const { data } = useApi<HistoryItem[]>("/api/tools/transcode/history?limit=20", swapFinished);
+const transcodeJobFinished = (event: {
+  type: string;
+  job?: { tool: string; type: string; state: string };
+}) =>
+  event.type === "job.updated" &&
+  event.job?.tool === "transcode" &&
+  (event.job.type === "encode" || event.job.type === "swap") &&
+  event.job.state !== "queued" &&
+  event.job.state !== "running";
+
+const dayKey = (iso: string) => new Date(iso).toLocaleDateString("en-CA");
+
+function dayLabel(key: string): string {
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 86_400_000);
+  if (key === today.toLocaleDateString("en-CA")) return "Today";
+  if (key === yesterday.toLocaleDateString("en-CA")) return "Yesterday";
+  return new Date(`${key}T12:00:00`).toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+/** Everything Kondo has done, by day. Kept forever. */
+function History() {
+  const { data } = useApi<LogEntry[]>("/api/tools/transcode/log?limit=200", transcodeJobFinished);
+  const [older, setOlder] = useState<LogEntry[]>([]);
+  const [more, setMore] = useState(true);
   if (!data || data.length === 0) return null;
+  const entries = [...data, ...older.filter((o) => !data.some((d) => d.id === o.id))];
+  const days = new Map<string, LogEntry[]>();
+  for (const entry of entries) {
+    const key = dayKey(entry.at);
+    days.set(key, [...(days.get(key) ?? []), entry]);
+  }
+  const loadOlder = async () => {
+    const last = entries.at(-1);
+    if (!last) return;
+    const page = await api.get<LogEntry[]>(
+      `/api/tools/transcode/log?limit=200&before=${encodeURIComponent(last.at)}`,
+    );
+    setOlder([...older, ...page]);
+    if (page.length < 200) setMore(false);
+  };
+
   return (
     <section>
-      <h2>Recently replaced</h2>
+      <h2>History</h2>
       <div className="card history">
-        {data.map((item) => {
-          const parts = item.path.split("/");
-          const name = parts.pop() ?? item.path;
+        {[...days].map(([key, list], i) => {
+          const replaced = list.filter((e) => e.kind === "replaced");
+          const saved = replaced.reduce(
+            (sum, e) => sum + (e.sourceBytes ?? 0) - (e.outputBytes ?? 0),
+            0,
+          );
+          const others = (Object.keys(LOG_LABELS) as LogKind[])
+            .filter((k) => k !== "replaced")
+            .map((k) => [k, list.filter((e) => e.kind === k).length] as const)
+            .filter(([, n]) => n > 0);
           return (
-            <details key={`${item.fileId}-${item.swappedAt}`}>
+            <details key={key} open={i === 0}>
               <summary>
-                <span className="history-name">
-                  <strong>{name}</strong>
-                  <span className="muted small"> {parts.slice(-2).join("/")}</span>
-                </span>
+                <strong>{dayLabel(key)}</strong>
                 <span className="small">
-                  {bytes(item.sourceBytes)} → {bytes(item.outputBytes)}{" "}
-                  <span className="muted">· {ago(item.swappedAt)}</span>
+                  {replaced.length > 0 && (
+                    <>
+                      {count(replaced.length)} replaced ·{" "}
+                      <span className="good">{bytes(saved)} saved</span>
+                    </>
+                  )}
+                  {others.map(([k, n]) => (
+                    <span key={k} className="muted">
+                      {" "}
+                      · {n} {LOG_LABELS[k].toLowerCase()}
+                    </span>
+                  ))}
                 </span>
               </summary>
-              {item.details && item.details.frames.length > 0 ? (
-                <Frames fileId={item.fileId} times={item.details.frames} />
-              ) : (
-                <p className="muted small">No comparison frames kept for this one.</p>
-              )}
+              <ul className="log-entries">
+                {list.map((entry) => (
+                  <LogRow key={entry.id} entry={entry} />
+                ))}
+              </ul>
             </details>
           );
         })}
+        {more && data.length >= 200 && (
+          <button type="button" className="link small" onClick={() => void loadOlder()}>
+            Show older
+          </button>
+        )}
       </div>
     </section>
+  );
+}
+
+function LogRow({ entry }: { entry: LogEntry }) {
+  const [open, setOpen] = useState(false);
+  const parts = entry.path.split("/");
+  const name = parts.pop() ?? entry.path;
+  const time = new Date(entry.at).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const frames = entry.framesKept && entry.details && entry.details.frames.length > 0;
+  return (
+    <li>
+      <div className="log-line">
+        <span className="muted small">{time}</span>
+        <span className={`pill log ${entry.kind}`}>{LOG_LABELS[entry.kind]}</span>
+        <span className="log-name">
+          {frames ? (
+            <button type="button" className="link" onClick={() => setOpen(!open)}>
+              {name}
+            </button>
+          ) : (
+            name
+          )}
+          <span className="muted small"> {parts.slice(-2).join("/")}</span>
+        </span>
+        <span className="small">
+          {entry.sourceBytes !== null && bytes(entry.sourceBytes)}
+          {entry.kind === "replaced" && entry.outputBytes !== null && (
+            <> → {bytes(entry.outputBytes)}</>
+          )}
+        </span>
+      </div>
+      {entry.detail && entry.kind !== "replaced" && (
+        <p className="muted small log-detail">{entry.detail}</p>
+      )}
+      {open && entry.details && <Frames fileId={entry.fileId} times={entry.details.frames} />}
+    </li>
   );
 }
 
