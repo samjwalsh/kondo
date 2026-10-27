@@ -118,14 +118,18 @@ discover → probe → decide → (queue) → encode → verify → approve → 
    - Remembered decisions (skipped, failed, not worth it) aren't retried unless
      the file changes.
 4. **Queue** ordered by expected space saved.
-5. **Encode** to a hidden temp file in the same folder:
-   `.<name>.kondo-<job>.mkv` (same filesystem → atomic swap later).
+5. **Encode** into Kondo's own work folder on the VM's disk (not the library), so
+   results waiting for approval never sit in the library and a crash can't leave
+   half-written files there. Black bars are cropped only when six sample points
+   agree.
 6. **Verify**: duration within max(1 s, 0.5 %); expected streams present; video is
    HEVC; three short decode checks (start/middle/end); result ≤ 80 % of the
    original's size (otherwise "not worth it": temp deleted, original kept).
-7. **Approve**: in approval mode the job waits with a summary (tracks kept /
-   dropped, size before → after, encoder, a link to compare). Approve or reject,
-   singly or in bulk. Later: automatic mode.
+7. **Approve**: in approval mode the result waits with a summary (size before →
+   after, checks, encoder speed) and two comparison frames (original vs Kondo at
+   the same moment). Approve or reject; rejecting (or cancelling an encode) means
+   the file isn't offered again. At most 10 results are waiting or in progress at
+   once, so the work folder can't fill the disk. Later: automatic mode.
 8. **Swap** (see below), then ask Plex to rescan that folder and Sonarr/Radarr to
    rescan the series/movie.
 
@@ -228,11 +232,13 @@ Each step is recorded in SQLite before it happens:
 
 1. Ask Plex for active sessions; if anyone is playing (or paused on) this file,
    wait and retry later.
-2. Record `SWAPPING` (source, temp, final paths).
-3. `rename(temp → final)` — atomic. Same name (mkv → mkv): the episode is never
+2. Copy the result next to the original as a hidden temp file
+   (`.<name>.kondo-<id>.mkv`, same filesystem as the original) and check its size.
+3. Record `SWAPPING` (source, temp, final paths).
+4. `rename(temp → final)` — atomic. Same name (mkv → mkv): the episode is never
    missing, even for an instant.
-4. If the name changed (mp4 → mkv), unlink the source.
-5. Record `DONE`; trigger Plex + Sonarr/Radarr rescans.
+5. If the name changed (mp4 → mkv), unlink the source.
+6. Record `DONE`; delete the work folder; trigger Plex + Sonarr/Radarr rescans.
 
 On start-up Kondo finishes or rolls back anything left mid-way:
 `ENCODING` → delete the temp file, requeue; `VERIFIED`/`AWAITING_APPROVAL` →
