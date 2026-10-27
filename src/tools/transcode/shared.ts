@@ -147,7 +147,9 @@ export type OutcomeStatus =
   | "approved"
   | "rejected"
   | "not-worth-it"
-  | "failed";
+  | "failed"
+  | "swapping"
+  | "done";
 
 export const OUTCOME_LABELS: Record<OutcomeStatus, string> = {
   "awaiting-approval": "Waiting for approval",
@@ -155,6 +157,8 @@ export const OUTCOME_LABELS: Record<OutcomeStatus, string> = {
   rejected: "Rejected",
   "not-worth-it": "Not worth it",
   failed: "Failed",
+  swapping: "Swapping in",
+  done: "Done",
 };
 
 export interface VerifyReport {
@@ -227,6 +231,8 @@ export interface LibrarySummary {
   problems: number;
   notYetRead: number;
   awaitingApproval: number;
+  /** Results swapped into the library so far. */
+  done: { count: number; savedBytes: number };
   byReason: { code: ReasonCode; label: string; count: number; bytes: number }[];
   lastScan: ScanInfo | null;
 }

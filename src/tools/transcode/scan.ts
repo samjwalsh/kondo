@@ -1,5 +1,5 @@
 import type { Dirent } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { JobCancelledError, type JobContext } from "../../server/core/jobs.js";
 import type { SettingsStore } from "../../server/core/settings.js";
@@ -11,6 +11,7 @@ import { extractMediaInfo, type Probe } from "./media.js";
 import { evaluate, outcomeOverride, type RuleSettings } from "./rules.js";
 import type { ArrMatch } from "./shared.js";
 import type { FoundFile, LibraryStore } from "./store.js";
+import { tempFileId } from "./swap.js";
 
 const VIDEO_EXTENSIONS = new Set([
   ".mkv",
@@ -85,8 +86,16 @@ export async function runScan(job: JobContext<unknown>, deps: ScanDeps): Promise
     job.progress(null, "Listing files…");
     const found = new Map<string, FoundFile>();
     const problems: string[] = [];
-    for (const root of roots) await walk(root, root, neverTouch, found, problems, job);
+    const temps: string[] = [];
+    for (const root of roots) await walk(root, root, neverTouch, { found, problems, temps }, job);
     for (const p of problems.slice(0, 20)) job.log(p, "warn");
+    // Left behind by a swap that was cut short and then abandoned (one in progress is kept).
+    for (const temp of temps) {
+      const id = tempFileId(path.basename(temp));
+      if (id === null || deps.store.outcome(id)?.status === "swapping") continue;
+      await rm(temp, { force: true });
+      job.log(`Removed a leftover temp file: ${temp}`, "warn");
+    }
     const changes = deps.store.reconcile(found, seenAt, problems.length === 0);
     job.log(
       `Found ${found.size} videos (${changes.added} new, ${changes.changed} changed, ${changes.removed} gone)`,
@@ -136,12 +145,18 @@ export async function runScan(job: JobContext<unknown>, deps: ScanDeps): Promise
   }
 }
 
+interface WalkOut {
+  found: Map<string, FoundFile>;
+  problems: string[];
+  /** Kondo's own hidden temp files (`.name.kondo-12.mkv`). */
+  temps: string[];
+}
+
 async function walk(
   dir: string,
   root: string,
   neverTouch: string[],
-  found: Map<string, FoundFile>,
-  problems: string[],
+  out: WalkOut,
   job: JobContext<unknown>,
 ): Promise<void> {
   await job.checkpoint();
@@ -149,22 +164,27 @@ async function walk(
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch (error) {
-    problems.push(`Couldn't list ${dir}: ${errorMessage(error)}`);
+    out.problems.push(`Couldn't list ${dir}: ${errorMessage(error)}`);
     return;
   }
   for (const entry of entries) {
-    // Hidden files include Kondo's own in-progress temp files.
-    if (entry.name.startsWith(".")) continue;
     const full = path.join(dir, entry.name);
+    // Hidden files are skipped; Kondo's own temp files are noted for tidying.
+    if (entry.name.startsWith(".")) {
+      if (entry.isFile() && tempFileId(entry.name) !== null && !isInside(full, neverTouch)) {
+        out.temps.push(full);
+      }
+      continue;
+    }
     if (isInside(full, neverTouch)) continue;
     if (entry.isDirectory()) {
-      await walk(full, root, neverTouch, found, problems, job);
+      await walk(full, root, neverTouch, out, job);
     } else if (entry.isFile() && VIDEO_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
       try {
         const s = await stat(full);
-        found.set(full, { root, size: s.size, mtimeMs: Math.round(s.mtimeMs) });
+        out.found.set(full, { root, size: s.size, mtimeMs: Math.round(s.mtimeMs) });
       } catch (error) {
-        problems.push(`Couldn't read ${full}: ${errorMessage(error)}`);
+        out.problems.push(`Couldn't read ${full}: ${errorMessage(error)}`);
       }
     }
   }

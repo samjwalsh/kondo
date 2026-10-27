@@ -1,12 +1,15 @@
 import { createReadStream } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { defineTool } from "../../server/core/tools.js";
+import { Lock } from "../../server/core/lock.js";
+import { defineTool, type Integrations } from "../../server/core/tools.js";
+import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
 import { type EncodePayload, type EncodeResult, runEncode, workDirFor } from "./encode.js";
 import { librarySettings, runScan } from "./scan.js";
-import type { FileFilter, FileSort } from "./shared.js";
-import { encodeKey, LibraryStore, migrations } from "./store.js";
+import type { FileDetail, FileFilter, FileSort } from "./shared.js";
+import { encodeKey, LibraryStore, migrations, swapKey } from "./store.js";
+import { runSwap, type SwapPayload, type SwapResult } from "./swap.js";
 
 export const transcodeSettings: SettingsSection = {
   scope: "transcode",
@@ -99,6 +102,39 @@ export const transcodeSettings: SettingsSection = {
 const FILTERS = new Set<FileFilter>(["transcode", "skip", "error", "all"]);
 const SORTS = new Set<FileSort>(["saving", "size", "path"]);
 
+/** Tells Plex and Sonarr/Radarr that a file was replaced. Each is best effort. */
+async function rescanAfterSwap(
+  integrations: Integrations,
+  file: FileDetail,
+  folder: string,
+): Promise<string[]> {
+  const lines: string[] = [];
+  if (integrations.plex.configured()) {
+    try {
+      const library = await integrations.plex.refreshFolder(folder);
+      lines.push(
+        library
+          ? `Asked Plex to rescan the folder (${library})`
+          : "No Plex library contains this folder, so Plex wasn't asked to rescan",
+      );
+    } catch (error) {
+      lines.push(`Couldn't ask Plex to rescan: ${errorMessage(error)}`);
+    }
+  }
+  if (file.arr) {
+    const client = integrations[file.arr.app];
+    if (client.configured()) {
+      try {
+        await client.rescan(file.arr.id);
+        lines.push(`Asked ${client.name} to rescan ${file.arr.title}`);
+      } catch (error) {
+        lines.push(`Couldn't ask ${client.name} to rescan: ${errorMessage(error)}`);
+      }
+    }
+  }
+  return lines;
+}
+
 function terabytes(bytes: number): string {
   return bytes >= 1e12 ? `${(bytes / 1e12).toFixed(1)} TB` : `${Math.round(bytes / 1e9)} GB`;
 }
@@ -114,6 +150,21 @@ export default defineTool({
     const store = new LibraryStore(ctx.db);
     const workRoot = path.join(ctx.dataDir, "work");
     const scan = () => ctx.enqueue("scan", {}, { dedupeKey: "transcode:scan" });
+    // Scans and swaps take turns, so a scan never sees a file half-swapped.
+    const libraryLock = new Lock();
+
+    /** Starts swaps for approved results whose file nobody is watching. */
+    const queueSwaps = () => {
+      for (const item of store.swapsToStart()) {
+        // A swap cut short is finished whatever Plex says: the library is already part-changed.
+        if (item.status === "approved" && ctx.plex.isPlaying(item.path)) continue;
+        ctx.enqueue<SwapPayload>(
+          "swap",
+          { fileId: item.id, name: path.basename(item.path) },
+          { dedupeKey: swapKey(item.id) },
+        );
+      }
+    };
 
     /** Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. */
     const feed = () => {
@@ -121,7 +172,7 @@ export default defineTool({
       if (v.mode !== "approval") return;
       let free =
         Number(v.maxWaiting) -
-        store.countOutcomes(["awaiting-approval", "approved"]) -
+        store.countOutcomes(["awaiting-approval", "approved", "swapping"]) -
         ctx.activeJobs("encode");
       if (free <= 0) return;
       for (const file of store.nextCandidates(free)) {
@@ -148,13 +199,41 @@ export default defineTool({
       slot: "general",
       title: () => "Scan the library",
       run: async (job) => {
-        const result = await runScan(job, {
-          store,
-          settings: ctx.settings,
-          integrations: ctx.integrations,
-        });
+        job.progress(null, libraryLock.busy ? "Waiting for a swap to finish…" : "Starting…");
+        const result = await libraryLock.run(
+          () =>
+            runScan(job, {
+              store,
+              settings: ctx.settings,
+              integrations: ctx.integrations,
+            }),
+          job.signal,
+        );
         feed();
         return result;
+      },
+    });
+
+    ctx.defineJob<SwapPayload, SwapResult>("swap", {
+      slot: "general",
+      title: (p) => `Swap in ${p.name}`,
+      run: (job) => {
+        job.progress(
+          null,
+          libraryLock.busy ? "Waiting for the library scan to finish…" : "Starting…",
+        );
+        return runSwap(job, {
+          store,
+          workRoot,
+          lock: libraryLock,
+          isPlaying: (file) => ctx.plex.isPlaying(file),
+          rescan: (file, folder) => rescanAfterSwap(ctx.integrations, file, folder),
+          onFinished: () => {
+            // The new file is read by the next scan; a free approval slot means another encode.
+            if (store.outcome(job.payload.fileId)?.status === "done") scan();
+            feed();
+          },
+        });
       },
     });
 
@@ -181,6 +260,7 @@ export default defineTool({
       async () => {
         await sweep();
         feed();
+        queueSwaps();
       },
       15_000,
     );
@@ -274,7 +354,9 @@ export default defineTool({
         if (store.outcome(id)?.status !== "awaiting-approval") {
           return reply.code(409).send({ error: "Nothing waiting for approval here" });
         }
-        return store.setOutcomeStatus(id, "approved");
+        const outcome = store.setOutcomeStatus(id, "approved", null);
+        queueSwaps();
+        return outcome;
       });
 
       app.post<{ Params: { id: string } }>("/approvals/:id/reject", async (request, reply) => {
@@ -282,6 +364,9 @@ export default defineTool({
         const status = store.outcome(id)?.status;
         if (status !== "awaiting-approval" && status !== "approved") {
           return reply.code(409).send({ error: "Nothing waiting for approval here" });
+        }
+        if (store.swapActive(id)) {
+          return reply.code(409).send({ error: "It's being swapped in right now" });
         }
         await rm(workDirFor(workRoot, id), { recursive: true, force: true });
         const outcome = store.setOutcomeStatus(id, "rejected");
@@ -328,6 +413,11 @@ export default defineTool({
         `${s.files.toLocaleString("en-GB")} videos (${terabytes(s.bytes)})`,
         `${s.toTranscode.count.toLocaleString("en-GB")} to transcode · about ${terabytes(saving)} to save`,
       ];
+      if (s.done.count > 0) {
+        lines.push(
+          `${s.done.count.toLocaleString("en-GB")} done · ${terabytes(s.done.savedBytes)} saved`,
+        );
+      }
       if (s.awaitingApproval > 0) lines.push(`${s.awaitingApproval} waiting for your approval`);
       if (s.notYetRead > 0) lines.push(`${s.notYetRead.toLocaleString("en-GB")} still to be read`);
       if (s.problems > 0) lines.push(`${s.problems} couldn't be read`);

@@ -228,23 +228,37 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
 
 ### Swap and crash recovery
 
-Each step is recorded in SQLite before it happens:
+Approving a result queues a **swap** job (general slot). Each step is recorded in
+SQLite before it happens:
 
-1. Ask Plex for active sessions; if anyone is playing (or paused on) this file,
-   wait and retry later.
-2. Copy the result next to the original as a hidden temp file
-   (`.<name>.kondo-<id>.mkv`, same filesystem as the original) and check its size.
-3. Record `SWAPPING` (source, temp, final paths).
-4. `rename(temp → final)` — atomic. Same name (mkv → mkv): the episode is never
-   missing, even for an instant.
-5. If the name changed (mp4 → mkv), unlink the source.
-6. Record `DONE`; delete the work folder; trigger Plex + Sonarr/Radarr rescans.
+1. Check the original is exactly what was encoded (same size and modified time).
+   If it changed (e.g. Sonarr upgraded it) or is gone, the result is thrown away
+   and the next scan looks at the file again.
+2. Ask Plex who's watching; if anyone is playing (or paused on) this file, or Plex
+   can't be asked, wait and try again later (every 5 minutes).
+3. Copy the result next to the original as a hidden temp file
+   (`.<name>.kondo-<id>.mkv`, same filesystem as the original), check its size,
+   and give it the original's permissions. Check Plex again.
+4. Record `SWAPPING` (source, temp, final paths).
+5. `rename(temp → final)` — atomic. Same name (mkv → mkv): the episode is never
+   missing, even for an instant. A torrent hardlinked to the original keeps the
+   original's data.
+6. If the name changed (mp4 → mkv), unlink the source.
+7. Record `DONE` (and the saving in a history table); point the file's row at the
+   new file so the next scan reads it afresh; delete the work folder; ask Plex to
+   rescan the folder and Sonarr/Radarr to rescan the series/movie.
+
+If a step before 4 fails, the temp file is removed and the result goes back to
+waiting for approval with the reason shown. Cancelling a swap does the same.
+
+Scans and swaps take turns (a lock), so a scan never sees a file half-swapped.
 
 On start-up Kondo finishes or rolls back anything left mid-way:
-`ENCODING` → delete the temp file, requeue; `VERIFIED`/`AWAITING_APPROVAL` →
-re-verify; `SWAPPING` → inspect what's on disk (tagged final present? source
-present?) and complete the remaining step. Stray `.kondo-*` temp files with no job
-are cleaned up.
+`ENCODING` → delete the work folder, requeue; `SWAPPING` → inspect what's on disk
+and complete the remaining step (temp present → rename; temp gone and the new file
+in place → unlink the old name if needed; neither → nothing changed, back to
+approved). Plex can't veto finishing a swap that's already part-done. Stray
+`.kondo-*` temp files are removed by the next scan unless their swap is part-way.
 
 ### One-off tidy of `[SQUISH]` files
 

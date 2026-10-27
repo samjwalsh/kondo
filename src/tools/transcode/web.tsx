@@ -82,8 +82,8 @@ const encodeFinished = (event: {
 }) =>
   event.type === "job.updated" &&
   event.job?.tool === "transcode" &&
-  event.job.type === "encode" &&
-  (event.job.state === "succeeded" || event.job.state === "failed");
+  (event.job.type === "encode" || event.job.type === "swap") &&
+  event.job.state !== "queued";
 
 function Approvals() {
   const { data, reload } = useApi<ApprovalItem[]>("/api/tools/transcode/approvals", encodeFinished);
@@ -171,8 +171,10 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
           </div>
         </>
       )}
-      {item.outcome.status === "approved" ? (
-        <p className="good">Approved. It's swapped into the library once that step is built.</p>
+      {item.outcome.status === "swapping" ? (
+        <p className="good">Swapping into the library…</p>
+      ) : item.outcome.status === "approved" ? (
+        <p className="good">Approved. It replaces the original as soon as nobody is watching it.</p>
       ) : (
         <div className="form-actions">
           <button
@@ -191,6 +193,9 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
           </button>
           {error && <span className="bad">{error}</span>}
         </div>
+      )}
+      {item.outcome.status === "awaiting-approval" && item.outcome.error && (
+        <p className="bad small">{item.outcome.error}</p>
       )}
       {showPlan && <FileDetailView id={item.file.id} />}
     </article>
@@ -235,6 +240,13 @@ function Summary({
           <strong className="good">{bytes(Math.max(0, saving))}</strong>
           <span className="muted">once their torrents are gone too</span>
         </div>
+        {s.done.count > 0 && (
+          <div className="tile">
+            <span className="tile-label">Done</span>
+            <strong className="good">{bytes(s.done.savedBytes)} saved</strong>
+            <span className="muted">{count(s.done.count)} file(s) replaced</span>
+          </div>
+        )}
         <button type="button" className="tile" onClick={() => onPick("skip")}>
           <span className="tile-label">Skipped</span>
           <strong>{count(s.skipped.count)}</strong>

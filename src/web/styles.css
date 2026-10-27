@@ -755,7 +755,9 @@ table.tracks .badge {
 .pill.outcome.awaiting-approval {
   color: var(--accent);
 }
-.pill.outcome.approved {
+.pill.outcome.approved,
+.pill.outcome.swapping,
+.pill.outcome.done {
   color: var(--good);
 }
 .pill.outcome.failed {
