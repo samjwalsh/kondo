@@ -117,6 +117,14 @@ describe("swapping a result into the library", () => {
     expect(existsSync(t.output)).toBe(false);
     expect(t.store.outcome(t.id)?.status).toBe("done");
     expect(t.rescans).toEqual([t.folder]);
+    expect(t.store.logEntries({ limit: 10 })).toMatchObject([
+      {
+        kind: "replaced",
+        path: t.source,
+        sourceBytes: ORIGINAL.length,
+        outputBytes: RESULT.length,
+      },
+    ]);
     expect(t.store.history(10)).toMatchObject([
       { fileId: t.id, path: t.source, sourceBytes: ORIGINAL.length, outputBytes: RESULT.length },
     ]);
@@ -166,6 +174,9 @@ describe("swapping a result into the library", () => {
     const outcome = t.store.outcome(t.id);
     expect(outcome?.status).toBe("awaiting-approval");
     expect(outcome?.error).toMatch(/already exists/);
+    expect(t.store.logEntries({ limit: 10 })).toMatchObject([
+      { kind: "swap-failed", detail: expect.stringMatching(/already exists/) },
+    ]);
   });
 
   it("cleans up and asks again when cancelled while copying", async () => {

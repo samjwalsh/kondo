@@ -14,6 +14,8 @@ import {
   type FilesPage,
   type HistoryItem,
   type LibrarySummary,
+  type LogEntry,
+  type LogKind,
   type Outcome,
   type OutcomeStatus,
   REASON_LABELS,
@@ -114,6 +116,31 @@ export const migrations: Migration[] = [
       );
       CREATE INDEX transcode_squish_by_title ON transcode_squish (title, status);
       CREATE TABLE transcode_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `,
+  },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE transcode_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        file_id INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        source_bytes INTEGER,
+        output_bytes INTEGER,
+        encoder TEXT,
+        detail TEXT,
+        details TEXT
+      );
+      CREATE INDEX transcode_log_by_time ON transcode_log (at);
+      INSERT INTO transcode_log (at, file_id, path, kind, source_bytes, output_bytes, encoder, details)
+        SELECT swapped_at, file_id, path, 'replaced', source_bytes, output_bytes, encoder, details
+        FROM transcode_history ORDER BY id;
+      INSERT INTO transcode_log (at, file_id, path, kind, source_bytes, output_bytes, encoder, detail)
+        SELECT o.updated_at, o.file_id, f.path, o.status, f.size, o.output_bytes, o.encoder, o.error
+        FROM transcode_outcomes o JOIN transcode_files f ON f.id = o.file_id
+        WHERE o.status IN ('not-worth-it', 'rejected', 'failed') ORDER BY o.updated_at;
     `,
   },
 ];
@@ -476,6 +503,25 @@ export class LibraryStore {
         now,
       );
     const saved = this.outcome(fileId) as Outcome;
+    // Endings worth a line in the history (a successful swap is logged by completeSwap).
+    const kind: LogKind | null =
+      outcome.status === "not-worth-it" ||
+      outcome.status === "rejected" ||
+      outcome.status === "failed"
+        ? outcome.status
+        : outcome.status === "awaiting-approval" &&
+            previous?.status !== "awaiting-approval" &&
+            outcome.error
+          ? "swap-failed"
+          : null;
+    if (kind) {
+      this.log(fileId, kind, {
+        sourceBytes: outcome.details?.sourceBytes ?? null,
+        outputBytes: outcome.outputBytes ?? null,
+        encoder: outcome.encoder ?? null,
+        detail: outcome.error ?? null,
+      });
+    }
     const override = outcomeOverride(saved);
     if (override) {
       this.db
@@ -570,7 +616,79 @@ export class LibraryStore {
           now,
           done.details ? JSON.stringify(done.details) : null,
         );
+      this.log(fileId, "replaced", {
+        path: done.path,
+        sourceBytes: done.sourceBytes,
+        outputBytes: done.size,
+        encoder: done.encoder,
+        details: done.details,
+        at: now,
+      });
     });
+  }
+
+  /** Adds a line to the permanent history of what Kondo did. */
+  log(
+    fileId: number,
+    kind: LogKind,
+    entry: {
+      path?: string;
+      sourceBytes?: number | null;
+      outputBytes?: number | null;
+      encoder?: string | null;
+      detail?: string | null;
+      details?: EncodeDetails | null;
+      at?: string;
+    },
+  ): void {
+    const file = this.db.prepare("SELECT path, size FROM transcode_files WHERE id = ?").get(fileId);
+    const path = entry.path ?? str(file?.path) ?? "";
+    this.db
+      .prepare(
+        `INSERT INTO transcode_log (at, file_id, path, kind, source_bytes, output_bytes, encoder, detail, details)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        entry.at ?? new Date().toISOString(),
+        fileId,
+        path,
+        kind,
+        entry.sourceBytes ?? num(file?.size),
+        entry.outputBytes ?? null,
+        entry.encoder ?? null,
+        entry.detail ?? null,
+        entry.details ? JSON.stringify(entry.details) : null,
+      );
+  }
+
+  /** History lines, newest first: before `before` (an ISO time), or since `since`. */
+  logEntries(options: { before?: string; since?: string; limit: number }): LogEntry[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (options.before) {
+      where.push("at < ?");
+      params.push(options.before);
+    }
+    if (options.since) {
+      where.push("at >= ?");
+      params.push(options.since);
+    }
+    const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    return this.db
+      .prepare(`SELECT * FROM transcode_log ${clause} ORDER BY at DESC, id DESC LIMIT ?`)
+      .all(...params, options.limit)
+      .map((r) => ({
+        id: Number(r.id),
+        at: String(r.at),
+        fileId: Number(r.file_id),
+        path: String(r.path),
+        kind: String(r.kind) as LogKind,
+        sourceBytes: num(r.source_bytes),
+        outputBytes: num(r.output_bytes),
+        encoder: str(r.encoder),
+        detail: str(r.detail),
+        details: r.details === null ? null : (JSON.parse(String(r.details)) as EncodeDetails),
+      }));
   }
 
   /** Files swapped in, newest first. */

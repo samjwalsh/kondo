@@ -797,9 +797,39 @@ table.tracks .badge {
   gap: 4px 12px;
   cursor: pointer;
 }
-.history-name {
+.log-entries {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.log-entries li {
+  padding: 6px 0;
+  border-top: 1px dashed var(--border);
+}
+.log-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.log-name {
+  flex: 1 1 240px;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.log-detail {
+  margin: 2px 0 0;
+}
+.pill.log.replaced {
+  color: var(--good);
+}
+.pill.log.failed,
+.pill.log.swap-failed {
+  color: var(--bad);
+}
+.pill.log.not-worth-it,
+.pill.log.rejected {
+  color: var(--warn);
 }
 .squish-titles details {
   border-top: 1px solid var(--border);

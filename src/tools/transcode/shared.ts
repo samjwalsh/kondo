@@ -326,3 +326,31 @@ export interface Calibration {
   cpuSpeed: number | null;
   note: string | null;
 }
+
+export type LogKind = "replaced" | "not-worth-it" | "failed" | "rejected" | "swap-failed";
+
+export const LOG_LABELS: Record<LogKind, string> = {
+  replaced: "Replaced",
+  "not-worth-it": "Not worth it",
+  failed: "Failed",
+  rejected: "Rejected",
+  "swap-failed": "Couldn't swap in",
+};
+
+/** One line of the permanent history of what Kondo did to a file. */
+export interface LogEntry {
+  id: number;
+  at: string;
+  fileId: number;
+  /** Full path at the time. */
+  path: string;
+  kind: LogKind;
+  sourceBytes: number | null;
+  outputBytes: number | null;
+  encoder: string | null;
+  detail: string | null;
+  /** Encode details (with comparison frame times) for replaced files. */
+  details: EncodeDetails | null;
+  /** The comparison frames are still on disk. */
+  framesKept?: boolean;
+}
