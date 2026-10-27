@@ -19,7 +19,9 @@ export function openDb(dataDir: string): Db {
   if (isNew) chmodSync(file, 0o600);
   db.exec(`
     PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
+    -- Every commit reaches the disk before Kondo acts on it: a swap is recorded before the
+    -- library changes, and a power cut mustn't undo that record.
+    PRAGMA synchronous = FULL;
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS migrations (
