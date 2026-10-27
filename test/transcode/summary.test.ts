@@ -43,7 +43,12 @@ describe("morning summary", () => {
     );
   });
 
-  it("says nothing after a night with nothing to report", () => {
-    expect(morningSummary([], state)).toBeNull();
+  it("still checks in after a quiet night, with the reason when there's an obvious one", () => {
+    expect(morningSummary([], state)).toBe(
+      "Kondo is running; nothing was replaced.\n1,526 left to transcode.",
+    );
+    expect(morningSummary([], { ...state, idleBecause: "paused" })).toBe(
+      "Kondo is running; nothing was replaced (paused).\n1,526 left to transcode.",
+    );
   });
 });

@@ -95,7 +95,7 @@ export const transcodeSettings: SettingsSection = {
       label: "Send a short summary on Telegram when the night window ends",
       type: "boolean",
       default: true,
-      help: "A few lines: files replaced, space saved, anything that failed. Nothing is sent after a night with nothing to report.",
+      help: "A few lines: files replaced, space saved, anything that failed. Also sent after a quiet night, so you know Kondo is running.",
     },
     {
       key: "maxSwapsPerDay",
@@ -389,12 +389,19 @@ export default defineTool({
         store.meta<string>("summarySince") ?? new Date(now.getTime() - 86_400_000).toISOString();
       store.setMeta("summarySince", now.toISOString());
       const s = store.summary(librarySettings(ctx.settings).roots);
+      const mode = ctx.settings.values("transcode").mode;
       const text = morningSummary(store.logEntries({ since, limit: 100_000 }), {
         savedSoFar: s.done.savedBytes,
         toTranscode: s.toTranscode.count,
         awaitingApproval: s.awaitingApproval,
+        idleBecause: info.paused
+          ? "paused"
+          : mode === "off"
+            ? "encoding is switched off"
+            : s.toTranscode.count === 0
+              ? "nothing left to do"
+              : null,
       });
-      if (!text) return;
       try {
         await telegram.send(text);
       } catch (error) {

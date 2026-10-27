@@ -8,12 +8,17 @@ function size(bytes: number): string {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** A few lines, or null if nothing happened (a quiet night has its own alert when it matters). */
+/** A few lines; also sent after a quiet night, as a sign that Kondo is running. */
 export function morningSummary(
   entries: LogEntry[],
-  state: { savedSoFar: number; toTranscode: number; awaitingApproval: number },
-): string | null {
-  if (entries.length === 0) return null;
+  state: {
+    savedSoFar: number;
+    toTranscode: number;
+    awaitingApproval: number;
+    /** Why nothing would have been encoded, if there's an obvious reason. */
+    idleBecause?: string | null;
+  },
+): string {
   const count = (kind: LogEntry["kind"]) => entries.filter((e) => e.kind === kind).length;
   const replaced = entries.filter((e) => e.kind === "replaced");
   const saved = replaced.reduce((sum, e) => sum + (e.sourceBytes ?? 0) - (e.outputBytes ?? 0), 0);
@@ -21,7 +26,9 @@ export function morningSummary(
   const lines = [
     replaced.length > 0
       ? `Kondo replaced ${plural(replaced.length, "file")}, saving ${size(saved)} (${size(state.savedSoFar)} so far).`
-      : "Kondo didn't replace anything.",
+      : entries.length > 0
+        ? "Kondo didn't replace anything."
+        : `Kondo is running; nothing was replaced${state.idleBecause ? ` (${state.idleBecause})` : ""}.`,
   ];
   const others = [
     [count("not-worth-it"), "not worth it"],
