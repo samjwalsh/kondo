@@ -13,13 +13,15 @@ export function Card({
   title,
   children,
   actions,
+  className,
 }: {
   title: ReactNode;
   children: ReactNode;
   actions?: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="card">
+    <section className={className ? `card ${className}` : "card"}>
       <header className="card-head">
         <h2>{title}</h2>
         {actions}

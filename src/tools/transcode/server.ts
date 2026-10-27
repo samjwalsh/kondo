@@ -1,12 +1,24 @@
-import { createReadStream } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { defineTool } from "../../server/core/tools.js";
+import { Lock } from "../../server/core/lock.js";
+import { sendFile } from "../../server/core/sendFile.js";
+import { defineTool, type Integrations } from "../../server/core/tools.js";
+import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
+import { CALIBRATION_KEY, runCalibration } from "./calibrate.js";
 import { type EncodePayload, type EncodeResult, runEncode, workDirFor } from "./encode.js";
 import { librarySettings, runScan } from "./scan.js";
-import type { FileFilter, FileSort } from "./shared.js";
-import { encodeKey, LibraryStore, migrations } from "./store.js";
+import type { ArrMatch, Calibration, FileFilter, FileSort } from "./shared.js";
+import {
+  runSquishCheck,
+  runSquishRename,
+  type SquishCheckResult,
+  type SquishDeps,
+  type SquishRenamePayload,
+  type SquishRenameResult,
+} from "./squish.js";
+import { encodeKey, LibraryStore, migrations, swapKey } from "./store.js";
+import { runSwap, type SwapPayload, type SwapResult } from "./swap.js";
 
 export const transcodeSettings: SettingsSection = {
   scope: "transcode",
@@ -73,8 +85,18 @@ export const transcodeSettings: SettingsSection = {
       options: [
         { value: "off", label: "Off: only show what Kondo would do" },
         { value: "approval", label: "On: encode, then wait for my approval" },
+        { value: "auto", label: "Automatic: encode and swap in results that pass every check" },
       ],
-      help: "Encodes run in the night window (and idle mode). Results wait in Kondo's own folder; the library isn't touched.",
+      help: "Encodes run in the night window (and idle mode). With approval, results wait in Kondo's own folder until you approve them. Automatic also approves anything already waiting.",
+    },
+    {
+      key: "maxSwapsPerDay",
+      label: "In automatic mode, swap in at most this many a day",
+      type: "number",
+      default: 0,
+      min: 0,
+      max: 1000,
+      help: "0 means no limit. Over the limit, results wait for approval until the next day.",
     },
     {
       key: "maxWaiting",
@@ -96,8 +118,44 @@ export const transcodeSettings: SettingsSection = {
   ],
 };
 
+/** How many recent swaps keep their comparison frames. */
+const RECENT_KEPT = 50;
+
 const FILTERS = new Set<FileFilter>(["transcode", "skip", "error", "all"]);
 const SORTS = new Set<FileSort>(["saving", "size", "path"]);
+
+/** Tells Plex (one folder) and Sonarr/Radarr (one series/movie) to look again. Best effort. */
+async function rescan(
+  integrations: Integrations,
+  arr: ArrMatch | null,
+  folder: string,
+): Promise<string[]> {
+  const lines: string[] = [];
+  if (integrations.plex.configured()) {
+    try {
+      const library = await integrations.plex.refreshFolder(folder);
+      lines.push(
+        library
+          ? `Asked Plex to rescan the folder (${library})`
+          : "No Plex library contains this folder, so Plex wasn't asked to rescan",
+      );
+    } catch (error) {
+      lines.push(`Couldn't ask Plex to rescan: ${errorMessage(error)}`);
+    }
+  }
+  if (arr) {
+    const client = integrations[arr.app];
+    if (client.configured()) {
+      try {
+        await client.rescan(arr.id);
+        lines.push(`Asked ${client.name} to rescan ${arr.title}`);
+      } catch (error) {
+        lines.push(`Couldn't ask ${client.name} to rescan: ${errorMessage(error)}`);
+      }
+    }
+  }
+  return lines;
+}
 
 function terabytes(bytes: number): string {
   return bytes >= 1e12 ? `${(bytes / 1e12).toFixed(1)} TB` : `${Math.round(bytes / 1e9)} GB`;
@@ -114,29 +172,79 @@ export default defineTool({
     const store = new LibraryStore(ctx.db);
     const workRoot = path.join(ctx.dataDir, "work");
     const scan = () => ctx.enqueue("scan", {}, { dedupeKey: "transcode:scan" });
+    // Scans and swaps take turns, so a scan never sees a file half-swapped.
+    const libraryLock = new Lock();
 
-    /** Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. */
-    const feed = () => {
+    /** Starts swaps for approved results whose file nobody is watching. */
+    const queueSwaps = () => {
+      for (const item of store.swapsToStart()) {
+        // A swap cut short is finished whatever Plex says: the library is already part-changed.
+        if (item.status === "approved" && ctx.plex.isPlaying(item.path)) continue;
+        ctx.enqueue<SwapPayload>(
+          "swap",
+          { fileId: item.id, name: path.basename(item.path) },
+          { dedupeKey: swapKey(item.id) },
+        );
+      }
+    };
+
+    /** In automatic mode, approves results that passed, within the daily limit. */
+    const autoApprove = () => {
       const v = ctx.settings.values("transcode");
-      if (v.mode !== "approval") return;
+      if (v.mode !== "auto") return;
+      const limit = Number(v.maxSwapsPerDay);
+      let room =
+        limit > 0
+          ? limit -
+            store.swappedSince(new Date(Date.now() - 86_400_000).toISOString()) -
+            store.countOutcomes(["approved", "swapping"])
+          : Number.POSITIVE_INFINITY;
+      for (const id of store.cleanAwaitingApproval()) {
+        if (room <= 0) break;
+        store.setOutcomeStatus(id, "approved", null);
+        room--;
+      }
+      queueSwaps();
+    };
+
+    /**
+     * Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. Each
+     * encoder gets one file queued at a time, so files go to whichever encoder frees up first;
+     * the CPU (better compression) is offered the biggest saving.
+     */
+    const feed = () => {
+      autoApprove();
+      const v = ctx.settings.values("transcode");
+      if (v.mode !== "approval" && v.mode !== "auto") return;
+      const encoding = ctx.settings.values("encoding");
+      const encoders: ("gpu" | "cpu")[] = [];
+      if (encoding.cpuEnabled && Number(encoding.cpuCrf) > 0) encoders.push("cpu");
+      if (encoding.gpuEnabled) encoders.push("gpu");
       let free =
         Number(v.maxWaiting) -
-        store.countOutcomes(["awaiting-approval", "approved"]) -
+        store.countOutcomes(["awaiting-approval", "approved", "swapping"]) -
         ctx.activeJobs("encode");
-      if (free <= 0) return;
-      for (const file of store.nextCandidates(free)) {
+      for (const encoder of encoders) {
+        if (free <= 0) return;
+        if (store.queuedEncodes(encoder) > 0) continue;
+        const file = store.nextCandidates(1)[0];
+        if (!file) return;
         ctx.enqueue<EncodePayload>(
           "encode",
-          { fileId: file.id, name: path.basename(file.path) },
+          { fileId: file.id, name: path.basename(file.path), encoder },
           { dedupeKey: encodeKey(file.id) },
         );
         free--;
       }
     };
 
-    /** Removes work folders that no result or running encode needs any more. */
+    /**
+     * Removes work folders that no result or running encode needs any more. The frames of the
+     * latest swaps are kept for "Recently replaced".
+     */
     const sweep = async () => {
       const keep = store.idsWithResults();
+      for (const item of store.history(RECENT_KEPT)) keep.add(item.fileId);
       for (const name of await readdir(workRoot).catch(() => [] as string[])) {
         const id = Number(name);
         if (!Number.isInteger(id) || keep.has(id) || store.detail(id)?.encoding) continue;
@@ -148,26 +256,88 @@ export default defineTool({
       slot: "general",
       title: () => "Scan the library",
       run: async (job) => {
-        const result = await runScan(job, {
-          store,
-          settings: ctx.settings,
-          integrations: ctx.integrations,
-        });
+        job.progress(null, libraryLock.busy ? "Waiting for a swap to finish…" : "Starting…");
+        const result = await libraryLock.run(
+          () =>
+            runScan(job, {
+              store,
+              settings: ctx.settings,
+              integrations: ctx.integrations,
+            }),
+          job.signal,
+        );
         feed();
         return result;
       },
     });
 
+    ctx.defineJob<SwapPayload, SwapResult>("swap", {
+      slot: "general",
+      title: (p) => `Swap in ${p.name}`,
+      run: (job) => {
+        job.progress(
+          null,
+          libraryLock.busy ? "Waiting for the library scan to finish…" : "Starting…",
+        );
+        return runSwap(job, {
+          store,
+          workRoot,
+          lock: libraryLock,
+          isPlaying: (file) => ctx.plex.isPlaying(file),
+          rescan: (file, folder) => rescan(ctx.integrations, file.arr, folder),
+          onFinished: () => {
+            // The new file is read by the next scan; a free approval slot means another encode.
+            if (store.outcome(job.payload.fileId)?.status === "done") scan();
+            feed();
+          },
+        });
+      },
+    });
+
+    const squishDeps = (): SquishDeps => ({
+      store,
+      settings: ctx.settings,
+      lock: libraryLock,
+      isPlaying: (file) => ctx.plex.isPlaying(file),
+      rescan: (arr, folder) => rescan(ctx.integrations, arr, folder),
+      pauseMs: 2000,
+    });
+
+    ctx.defineJob<Record<string, never>, SquishCheckResult>("squish-check", {
+      slot: "general",
+      title: () => "Look for [SQUISH] names",
+      run: (job) => runSquishCheck(job, squishDeps()),
+    });
+
+    ctx.defineJob<SquishRenamePayload, SquishRenameResult>("squish-rename", {
+      slot: "general",
+      title: (p) =>
+        p.title
+          ? `Remove [SQUISH] from ${path.basename(p.title)}`
+          : "Remove [SQUISH] from every title",
+      run: (job) => runSquishRename(job, squishDeps()),
+    });
+
+    ctx.defineJob<Record<string, never>, Calibration>("calibrate", {
+      slot: "cpu",
+      title: () => "Calibrate the CPU encoder",
+      run: (job) =>
+        runCalibration(job, {
+          store,
+          settings: ctx.settings,
+          workDir: path.join(ctx.dataDir, "calibration"),
+        }),
+    });
+
     ctx.defineJob<EncodePayload, EncodeResult>("encode", {
-      slot: "gpu",
-      title: (p) => `Transcode ${p.name}`,
+      slot: (p) => p.encoder ?? "gpu",
+      title: (p) => `Transcode ${p.name}${p.encoder === "cpu" ? " (CPU)" : ""}`,
       run: (job) =>
         runEncode(job, {
           store,
           settings: ctx.settings,
           workRoot,
           version: ctx.version,
-          encoder: "gpu",
           onFinished: feed,
         }),
       // Interrupted by a restart: throw away the partial result; it's encoded again.
@@ -181,6 +351,7 @@ export default defineTool({
       async () => {
         await sweep();
         feed();
+        queueSwaps();
       },
       15_000,
     );
@@ -198,6 +369,8 @@ export default defineTool({
         scan();
         feed();
       }
+      // An encoder switched on, or the CPU calibrated.
+      if (event.type === "settings.changed" && event.scope === "encoding") feed();
     });
 
     ctx.addHealthCheck({
@@ -267,14 +440,58 @@ export default defineTool({
         return reply.code(202).send(job);
       });
 
+      app.get("/calibration", async () => ({
+        result: store.meta<Calibration>(CALIBRATION_KEY),
+        running: ctx.activeJobs("calibrate") > 0,
+      }));
+
+      // Runs now (outside the night window), still giving way to Plex.
+      app.post("/calibration", async (_request, reply) =>
+        reply
+          .code(202)
+          .send(ctx.enqueue("calibrate", {}, { dedupeKey: "transcode:calibrate", force: true })),
+      );
+
+      app.get("/squish", async () => store.squishSummary());
+
+      app.get<{ Querystring: { title?: string } }>("/squish/items", async (request) =>
+        store
+          .squishItems(String(request.query.title ?? ""))
+          .map(({ fullPath: _, ...item }) => item),
+      );
+
+      app.post("/squish/check", async (_request, reply) =>
+        reply
+          .code(202)
+          .send(ctx.enqueue("squish-check", {}, { dedupeKey: "transcode:squish-check" })),
+      );
+
+      // One title, or all of them (one at a time).
+      app.post<{ Body: { title?: string } }>("/squish/rename", async (request, reply) => {
+        const title = request.body?.title;
+        if (title !== undefined && !store.squishTitlesToDo().includes(title)) {
+          return reply.code(404).send({ error: "Nothing to rename there" });
+        }
+        const job = ctx.enqueue<SquishRenamePayload>("squish-rename", title ? { title } : {}, {
+          dedupeKey: `transcode:squish-rename:${title ?? "*"}`,
+        });
+        return reply.code(202).send(job);
+      });
+
       app.get("/approvals", async () => store.approvals());
+
+      app.get<{ Querystring: { limit?: string } }>("/history", async (request) =>
+        store.history(Math.min(Math.max(Number(request.query.limit) || 20, 1), RECENT_KEPT)),
+      );
 
       app.post<{ Params: { id: string } }>("/approvals/:id/approve", async (request, reply) => {
         const id = Number(request.params.id);
         if (store.outcome(id)?.status !== "awaiting-approval") {
           return reply.code(409).send({ error: "Nothing waiting for approval here" });
         }
-        return store.setOutcomeStatus(id, "approved");
+        const outcome = store.setOutcomeStatus(id, "approved", null);
+        queueSwaps();
+        return outcome;
       });
 
       app.post<{ Params: { id: string } }>("/approvals/:id/reject", async (request, reply) => {
@@ -283,35 +500,34 @@ export default defineTool({
         if (status !== "awaiting-approval" && status !== "approved") {
           return reply.code(409).send({ error: "Nothing waiting for approval here" });
         }
+        if (store.swapActive(id)) {
+          return reply.code(409).send({ error: "It's being swapped in right now" });
+        }
         await rm(workDirFor(workRoot, id), { recursive: true, force: true });
         const outcome = store.setOutcomeStatus(id, "rejected");
         feed();
         return outcome;
       });
 
-      // Comparison frames: /work/12/frame-source-0.jpg
+      // Comparison frames and the result itself: /work/12/frame-source-0.jpg, /work/12/output.mkv
       app.get<{ Params: { id: string; name: string } }>(
         "/work/:id/:name",
         async (request, reply) => {
           const { id, name } = request.params;
-          if (!/^\d+$/.test(id) || !/^frame-(source|output)-\d\.jpg$/.test(name)) {
+          if (!/^\d+$/.test(id) || !/^(frame-(source|output)-\d\.jpg|output\.mkv)$/.test(name)) {
             return reply.code(404).send({ error: "Not found" });
           }
-          const file = path.join(workDirFor(workRoot, Number(id)), name);
-          if (
-            !(await stat(file).then(
-              (s) => s.isFile(),
-              () => false,
-            ))
-          ) {
-            return reply.code(404).send({ error: "Not found" });
-          }
-          return reply
-            .type("image/jpeg")
-            .header("cache-control", "private, max-age=3600")
-            .send(createReadStream(file));
+          if (name.endsWith(".jpg")) reply.header("cache-control", "private, max-age=3600");
+          return sendFile(request, reply, path.join(workDirFor(workRoot, Number(id)), name));
         },
       );
+
+      // The original, to compare against the result (read only).
+      app.get<{ Params: { id: string } }>("/files/:id/original", async (request, reply) => {
+        const file = store.detail(Number(request.params.id));
+        if (!file) return reply.code(404).send({ error: "No such file" });
+        return sendFile(request, reply, path.join(file.root, file.path));
+      });
     });
 
     ctx.setCard(() => {
@@ -328,6 +544,11 @@ export default defineTool({
         `${s.files.toLocaleString("en-GB")} videos (${terabytes(s.bytes)})`,
         `${s.toTranscode.count.toLocaleString("en-GB")} to transcode · about ${terabytes(saving)} to save`,
       ];
+      if (s.done.count > 0) {
+        lines.push(
+          `${s.done.count.toLocaleString("en-GB")} done · ${terabytes(s.done.savedBytes)} saved`,
+        );
+      }
       if (s.awaitingApproval > 0) lines.push(`${s.awaitingApproval} waiting for your approval`);
       if (s.notYetRead > 0) lines.push(`${s.notYetRead.toLocaleString("en-GB")} still to be read`);
       if (s.problems > 0) lines.push(`${s.problems} couldn't be read`);

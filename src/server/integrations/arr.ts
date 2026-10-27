@@ -46,10 +46,33 @@ export class ArrClient {
   }
 
   async get<T>(path: string): Promise<T> {
-    const base = String(this.settings.values(this.app).url);
-    return requestJson<T>(`${base}/api/v3${path}`, {
-      headers: { "X-Api-Key": this.settings.secret(this.app, "apiKey") ?? "" },
+    return requestJson<T>(this.url(path), { headers: this.headers() });
+  }
+
+  async post<T>(path: string, body: unknown): Promise<T> {
+    return requestJson<T>(this.url(path), {
+      method: "POST",
+      headers: { ...this.headers(), "content-type": "application/json" },
+      body: JSON.stringify(body),
     });
+  }
+
+  /** Asks Sonarr to rescan a series (or Radarr a movie) so it picks up a replaced file. */
+  async rescan(id: number): Promise<void> {
+    await this.post(
+      "/command",
+      this.app === "sonarr"
+        ? { name: "RescanSeries", seriesId: id }
+        : { name: "RescanMovie", movieId: id },
+    );
+  }
+
+  private url(path: string): string {
+    return `${String(this.settings.values(this.app).url).replace(/\/+$/, "")}/api/v3${path}`;
+  }
+
+  private headers(): Record<string, string> {
+    return { "X-Api-Key": this.settings.secret(this.app, "apiKey") ?? "" };
   }
 
   async version(): Promise<string> {

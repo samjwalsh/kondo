@@ -3,7 +3,7 @@ import type { PlexActivity, PlexSession } from "../../shared/api.js";
 import type { SettingsSection, TestResult } from "../../shared/settings.js";
 import type { EventBus } from "../core/events.js";
 import type { SettingsStore } from "../core/settings.js";
-import { errorMessage, requestJson } from "./http.js";
+import { errorMessage, request, requestJson } from "./http.js";
 
 export const plexSettings: SettingsSection = {
   scope: "plex",
@@ -45,6 +45,10 @@ interface RawSession {
     transcodeHwDecoding?: string;
     transcodeHwEncoding?: string;
   };
+}
+
+interface SectionsResponse {
+  MediaContainer?: { Directory?: { key: string; title?: string; Location?: { path: string }[] }[] };
 }
 
 interface SessionsResponse {
@@ -100,6 +104,29 @@ export class PlexClient {
       timeoutMs: 5000,
     });
     return parseSessions(json);
+  }
+
+  /**
+   * Asks Plex to rescan one folder. Returns the library's name, or null if no Plex library
+   * contains the folder.
+   */
+  async refreshFolder(folder: string): Promise<string | null> {
+    const json = await requestJson<SectionsResponse>(`${this.base()}/library/sections`, {
+      headers: this.headers(),
+      timeoutMs: 5000,
+    });
+    const section = (json.MediaContainer?.Directory ?? []).find((d) =>
+      (d.Location ?? []).some((l) => {
+        const root = l.path.replace(/\/+$/, "");
+        return folder === root || folder.startsWith(`${root}/`);
+      }),
+    );
+    if (!section) return null;
+    await request(
+      `${this.base()}/library/sections/${section.key}/refresh?path=${encodeURIComponent(folder)}`,
+      { headers: this.headers(), timeoutMs: 10_000 },
+    );
+    return section.title ?? section.key;
   }
 
   async test(): Promise<TestResult> {
@@ -196,8 +223,16 @@ export class PlexMonitor {
     return this.sessions.some((s) => s.transcode === "cpu");
   }
 
+  /**
+   * True if anyone is playing (or paused on) `file`, or if Plex can't be asked. Plex may see the
+   * library under a different path, so a matching file name counts too.
+   */
   isPlaying(file: string): boolean {
-    return !this.reachable || this.sessions.some((s) => s.file === file);
+    if (!this.reachable) return true;
+    const name = file.split("/").pop();
+    return this.sessions.some(
+      (s) => s.file === file || (s.file && s.file.split(/[\\/]/).pop() === name),
+    );
   }
 
   async refresh(): Promise<void> {

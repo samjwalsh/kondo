@@ -534,6 +534,14 @@ export function outcomeOverride(
       plan: null,
     };
   }
+  if (outcome.status === "squish") {
+    return {
+      decision: "skip",
+      reasonCode: "squish-done",
+      reason: "Already encoded by Squish; encoding it again would only lose quality",
+      plan: null,
+    };
+  }
   if (outcome.status === "failed" && outcome.attempts >= 2) {
     return {
       decision: "error",
@@ -543,4 +551,14 @@ export function outcomeOverride(
     };
   }
   return null;
+}
+
+/**
+ * Squish marked its output `… [SQUISH].mkv`. Only an H.265 file with that name counts as done:
+ * Squish also renamed a few files it never encoded.
+ */
+export function squishOverride(file: string, info: MediaInfo | null): Evaluation | null {
+  const name = file.slice(file.lastIndexOf("/") + 1);
+  if (!name.includes(" [SQUISH]") || info?.video?.codec !== "hevc") return null;
+  return outcomeOverride({ status: "squish", error: null, attempts: 0 });
 }

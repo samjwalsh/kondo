@@ -12,12 +12,16 @@ import {
   type FileSort,
   type FileSummary,
   type FilesPage,
+  type HistoryItem,
   type LibrarySummary,
   type Outcome,
   type OutcomeStatus,
   REASON_LABELS,
   type ReasonCode,
   type ScanInfo,
+  type SquishItem,
+  type SquishStatus,
+  type SquishSummary,
 } from "./shared.js";
 
 export const migrations: Migration[] = [
@@ -75,13 +79,64 @@ export const migrations: Migration[] = [
       CREATE INDEX transcode_outcomes_by_status ON transcode_outcomes (status);
     `,
   },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE transcode_outcomes ADD COLUMN swap TEXT;
+      CREATE TABLE transcode_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_id INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        source_bytes INTEGER NOT NULL,
+        output_bytes INTEGER NOT NULL,
+        encoder TEXT,
+        swapped_at TEXT NOT NULL
+      );
+    `,
+  },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE transcode_history ADD COLUMN details TEXT;
+      CREATE INDEX transcode_history_by_time ON transcode_history (swapped_at);
+    `,
+  },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE transcode_squish (
+        path TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        target TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX transcode_squish_by_title ON transcode_squish (title, status);
+      CREATE TABLE transcode_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `,
+  },
 ];
 
 /** Dedupe key of the encode job for a file (also used to find it in the core jobs table). */
 export const encodeKey = (fileId: number) => `transcode:encode:${fileId}`;
 
-const ACTIVE_ENCODE = `EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = 'transcode:encode:' || f.id
+/** Dedupe key of the job that swaps a file's approved result into the library. */
+export const swapKey = (fileId: number) => `transcode:swap:${fileId}`;
+
+const activeJob = (
+  prefix: string,
+) => `EXISTS (SELECT 1 FROM jobs j WHERE j.dedupe_key = '${prefix}' || f.id
   AND j.state IN ('queued', 'running', 'paused'))`;
+const ACTIVE_ENCODE = activeJob("transcode:encode:");
+const ACTIVE_SWAP = activeJob("transcode:swap:");
+
+/** Where a swap is copying to and replacing, recorded before anything in the library changes. */
+export interface SwapPaths {
+  source: string;
+  temp: string;
+  final: string;
+}
 
 export interface FoundFile {
   root: string;
@@ -152,11 +207,19 @@ export class LibraryStore {
     return transaction(this.db, () => {
       const existing = new Map(
         this.db
-          .prepare("SELECT id, path, size, mtime_ms FROM transcode_files")
+          .prepare(
+            `SELECT f.id, f.path, f.size, f.mtime_ms, o.status FROM transcode_files f
+             LEFT JOIN transcode_outcomes o ON o.file_id = f.id`,
+          )
           .all()
           .map((r) => [
             String(r.path),
-            { id: Number(r.id), size: Number(r.size), mtime: Number(r.mtime_ms) },
+            {
+              id: Number(r.id),
+              size: Number(r.size),
+              mtime: Number(r.mtime_ms),
+              swapping: r.status === "swapping",
+            },
           ]),
       );
       const insert = this.db.prepare(
@@ -177,7 +240,8 @@ export class LibraryStore {
         if (!old) {
           insert.run(path, f.root, f.size, f.mtimeMs, seenAt);
           added++;
-        } else if (old.size !== f.size || old.mtime !== f.mtimeMs) {
+          // A swap cut short is finished from its own record, so its file is left alone here.
+        } else if (!old.swapping && (old.size !== f.size || old.mtime !== f.mtimeMs)) {
           changed.run(f.size, f.mtimeMs, seenAt, f.root, old.id);
           forget.run(old.id);
           modified++;
@@ -280,6 +344,7 @@ export class LibraryStore {
       problems: 0,
       notYetRead: 0,
       awaitingApproval: this.countOutcomes(["awaiting-approval"]),
+      done: this.doneTotals(),
       byReason: [],
       lastScan: this.lastScan(),
     };
@@ -422,7 +487,8 @@ export class LibraryStore {
     return saved;
   }
 
-  setOutcomeStatus(fileId: number, status: OutcomeStatus): Outcome | null {
+  /** Moves a result to `status`, keeping the encode details. `error` replaces the message if given. */
+  setOutcomeStatus(fileId: number, status: OutcomeStatus, error?: string | null): Outcome | null {
     const current = this.outcome(fileId);
     if (!current) return null;
     return this.saveOutcome(fileId, {
@@ -431,8 +497,178 @@ export class LibraryStore {
       outputPath: status === "rejected" ? null : this.outputPath(fileId),
       outputBytes: current.outputBytes,
       details: current.details,
-      error: current.error,
+      error: error === undefined ? current.error : error,
     });
+  }
+
+  /** Forgets a result entirely, e.g. because the original changed under it. */
+  forgetOutcome(fileId: number): void {
+    this.db.prepare("DELETE FROM transcode_outcomes WHERE file_id = ?").run(fileId);
+  }
+
+  /** Records the paths of a swap that's about to change the library. */
+  startSwap(fileId: number, paths: SwapPaths): void {
+    this.db
+      .prepare(
+        "UPDATE transcode_outcomes SET status = 'swapping', swap = ?, error = NULL, updated_at = ? WHERE file_id = ?",
+      )
+      .run(JSON.stringify(paths), new Date().toISOString(), fileId);
+  }
+
+  swapPaths(fileId: number): SwapPaths | null {
+    const row = this.db
+      .prepare("SELECT swap FROM transcode_outcomes WHERE file_id = ?")
+      .get(fileId);
+    return row?.swap ? (JSON.parse(String(row.swap)) as SwapPaths) : null;
+  }
+
+  /**
+   * The new file is in place: point the file's row at it (so the next scan reads it afresh
+   * rather than treating it as changed) and add it to the history.
+   */
+  completeSwap(
+    fileId: number,
+    done: {
+      path: string;
+      size: number;
+      mtimeMs: number;
+      sourceBytes: number;
+      encoder: string | null;
+      details: EncodeDetails | null;
+    },
+  ): void {
+    const now = new Date().toISOString();
+    transaction(this.db, () => {
+      this.db
+        .prepare(
+          `UPDATE transcode_outcomes SET status = 'done', swap = NULL, output_path = NULL, error = NULL,
+           updated_at = ? WHERE file_id = ?`,
+        )
+        .run(now, fileId);
+      // A row left over for the new name (a file that has since gone) would clash.
+      this.db
+        .prepare("DELETE FROM transcode_files WHERE path = ? AND id != ?")
+        .run(done.path, fileId);
+      this.db
+        .prepare(
+          `UPDATE transcode_files SET path = ?, size = ?, mtime_ms = ?, probe = NULL, probe_error = NULL,
+           probed_at = NULL, decision = NULL, reason_code = NULL, reason = NULL, plan = NULL, est_bytes = NULL,
+           video_codec = NULL, width = NULL, height = NULL, video_kbps = NULL WHERE id = ?`,
+        )
+        .run(done.path, done.size, Math.round(done.mtimeMs), fileId);
+      this.db
+        .prepare(
+          `INSERT INTO transcode_history (file_id, path, source_bytes, output_bytes, encoder, swapped_at, details)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          fileId,
+          done.path,
+          done.sourceBytes,
+          done.size,
+          done.encoder,
+          now,
+          done.details ? JSON.stringify(done.details) : null,
+        );
+    });
+  }
+
+  /** Files swapped in, newest first. */
+  history(limit: number): HistoryItem[] {
+    return this.db
+      .prepare("SELECT * FROM transcode_history ORDER BY id DESC LIMIT ?")
+      .all(limit)
+      .map((r) => ({
+        fileId: Number(r.file_id),
+        path: String(r.path),
+        sourceBytes: Number(r.source_bytes),
+        outputBytes: Number(r.output_bytes),
+        encoder: str(r.encoder),
+        swappedAt: String(r.swapped_at),
+        details: r.details === null ? null : (JSON.parse(String(r.details)) as EncodeDetails),
+      }));
+  }
+
+  /** How many files were swapped in since `since` (an ISO time). */
+  swappedSince(since: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM transcode_history WHERE swapped_at >= ?")
+      .get(since);
+    return Number(row?.n ?? 0);
+  }
+
+  /** Results waiting for approval that passed cleanly (not ones sent back after a failed swap). */
+  cleanAwaitingApproval(): number[] {
+    return this.db
+      .prepare(
+        "SELECT file_id FROM transcode_outcomes WHERE status = 'awaiting-approval' AND error IS NULL ORDER BY updated_at",
+      )
+      .all()
+      .map((r) => Number(r.file_id));
+  }
+
+  doneTotals(): { count: number; savedBytes: number } {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(source_bytes - output_bytes), 0) AS saved FROM transcode_history",
+      )
+      .get();
+    return { count: Number(row?.n ?? 0), savedBytes: Number(row?.saved ?? 0) };
+  }
+
+  /** Approved results (and swaps cut short) with no swap job queued or running. */
+  swapsToStart(): { id: number; path: string; status: OutcomeStatus }[] {
+    return this.db
+      .prepare(
+        `SELECT f.id, f.path, o.status FROM transcode_files f JOIN transcode_outcomes o ON o.file_id = f.id
+         WHERE o.status IN ('approved', 'swapping') AND NOT ${ACTIVE_SWAP} ORDER BY o.updated_at`,
+      )
+      .all()
+      .map((r) => ({
+        id: Number(r.id),
+        path: String(r.path),
+        status: String(r.status) as OutcomeStatus,
+      }));
+  }
+
+  /** Files to transcode with a known video bitrate, lowest first (calibration samples). */
+  transcodeCandidatesByBitrate(): { id: number; width: number; kbps: number }[] {
+    return this.db
+      .prepare(
+        `SELECT id, width, video_kbps FROM transcode_files
+         WHERE decision = 'transcode' AND video_kbps IS NOT NULL AND width IS NOT NULL ORDER BY video_kbps`,
+      )
+      .all()
+      .map((r) => ({ id: Number(r.id), width: Number(r.width), kbps: Number(r.video_kbps) }));
+  }
+
+  meta<T>(key: string): T | null {
+    const row = this.db.prepare("SELECT value FROM transcode_meta WHERE key = ?").get(key);
+    return row ? (JSON.parse(String(row.value)) as T) : null;
+  }
+
+  setMeta(key: string, value: unknown): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO transcode_meta (key, value) VALUES (?, ?)")
+      .run(key, JSON.stringify(value));
+  }
+
+  /** Encode jobs waiting for a slot to free up. */
+  queuedEncodes(slot: "gpu" | "cpu"): number {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE dedupe_key LIKE 'transcode:encode:%' AND state = 'queued' AND slot = ?",
+      )
+      .get(slot);
+    return Number(row?.n ?? 0);
+  }
+
+  /** A swap job for this file is queued or running. */
+  swapActive(fileId: number): boolean {
+    const row = this.db
+      .prepare(`SELECT ${ACTIVE_SWAP} AS active FROM transcode_files f WHERE f.id = ?`)
+      .get(fileId);
+    return Boolean(row?.active);
   }
 
   outputPath(fileId: number): string | null {
@@ -450,12 +686,12 @@ export class LibraryStore {
     return Number(row?.n ?? 0);
   }
 
-  /** File ids that still have results on disk (waiting or approved). */
+  /** File ids that still have results on disk (waiting, approved or being swapped in). */
   idsWithResults(): Set<number> {
     return new Set(
       this.db
         .prepare(
-          "SELECT file_id FROM transcode_outcomes WHERE status IN ('awaiting-approval', 'approved')",
+          "SELECT file_id FROM transcode_outcomes WHERE status IN ('awaiting-approval', 'approved', 'swapping')",
         )
         .all()
         .map((r) => Number(r.file_id)),
@@ -466,7 +702,7 @@ export class LibraryStore {
     return this.db
       .prepare(
         `SELECT ${SUMMARY_COLUMNS}, f.plan FROM transcode_files f JOIN transcode_outcomes o ON o.file_id = f.id
-         WHERE o.status IN ('awaiting-approval', 'approved') ORDER BY o.updated_at`,
+         WHERE o.status IN ('awaiting-approval', 'approved', 'swapping') ORDER BY o.updated_at`,
       )
       .all()
       .map((row) => ({
@@ -536,5 +772,109 @@ export class LibraryStore {
       errors: Number(row.errors),
       error: str(row.error),
     };
+  }
+
+  // [SQUISH] tidy -------------------------------------------------------------------------
+
+  /**
+   * Replaces the list of files still to rename (`status` pending or clash) with a fresh check.
+   * Files already renamed stay as a record.
+   */
+  saveSquishPlan(
+    items: { path: string; title: string; target: string; status: SquishStatus }[],
+    checkedAt: string,
+  ): void {
+    transaction(this.db, () => {
+      this.db.prepare("DELETE FROM transcode_squish WHERE status != 'done'").run();
+      const insert = this.db.prepare(
+        `INSERT OR REPLACE INTO transcode_squish (path, title, target, status, error, updated_at)
+         VALUES (?, ?, ?, ?, NULL, ?)`,
+      );
+      for (const item of items) {
+        insert.run(item.path, item.title, item.target, item.status, checkedAt);
+      }
+      this.db
+        .prepare("INSERT OR REPLACE INTO transcode_meta (key, value) VALUES ('squishCheckedAt', ?)")
+        .run(checkedAt);
+    });
+  }
+
+  squishSummary(): SquishSummary {
+    const checked = this.db
+      .prepare("SELECT value FROM transcode_meta WHERE key = 'squishCheckedAt'")
+      .get();
+    const rows = this.db
+      .prepare(
+        `SELECT title, SUM(status IN ('pending', 'error')) AS pending, SUM(status = 'clash') AS clashes,
+         SUM(status = 'done') AS done FROM transcode_squish GROUP BY title ORDER BY title`,
+      )
+      .all();
+    const titles = rows
+      .map((r) => ({
+        key: String(r.title),
+        name: String(r.title).slice(String(r.title).lastIndexOf("/") + 1),
+        pending: Number(r.pending),
+        clashes: Number(r.clashes),
+        done: Number(r.done),
+      }))
+      .filter((t) => t.pending > 0 || t.clashes > 0);
+    const total = (key: "pending" | "clashes" | "done") =>
+      rows.reduce((sum, r) => sum + Number(r[key]), 0);
+    return {
+      checkedAt: checked ? String(checked.value) : null,
+      titles,
+      pending: total("pending"),
+      clashes: total("clashes"),
+      done: total("done"),
+    };
+  }
+
+  squishItems(title: string): (SquishItem & { fullPath: string })[] {
+    return this.db
+      .prepare("SELECT * FROM transcode_squish WHERE title = ? ORDER BY path")
+      .all(title)
+      .map((r) => ({
+        fullPath: String(r.path),
+        path: String(r.path).slice(title.length + 1),
+        target: String(r.target),
+        status: String(r.status) as SquishStatus,
+        error: str(r.error),
+      }));
+  }
+
+  /** Titles with files still to rename, in order. */
+  squishTitlesToDo(): string[] {
+    return this.db
+      .prepare(
+        "SELECT DISTINCT title FROM transcode_squish WHERE status IN ('pending', 'error') ORDER BY title",
+      )
+      .all()
+      .map((r) => String(r.title));
+  }
+
+  setSquishStatus(path: string, status: SquishStatus, error: string | null = null): void {
+    this.db
+      .prepare("UPDATE transcode_squish SET status = ?, error = ?, updated_at = ? WHERE path = ?")
+      .run(status, error, new Date().toISOString(), path);
+  }
+
+  /**
+   * A video was renamed (same contents): point its row at the new name so it isn't read again,
+   * and remember Squish's H.265 output so it's never re-encoded. Returns the file's arr match.
+   */
+  renamedVideo(from: string, to: string): ArrMatch | null {
+    return transaction(this.db, () => {
+      this.db.prepare("DELETE FROM transcode_files WHERE path = ?").run(to);
+      const row = this.db
+        .prepare("SELECT id, video_codec, arr FROM transcode_files WHERE path = ?")
+        .get(from);
+      if (!row) return null;
+      const id = Number(row.id);
+      this.db.prepare("UPDATE transcode_files SET path = ? WHERE id = ?").run(to, id);
+      if (row.video_codec === "hevc" && !this.outcome(id)) {
+        this.saveOutcome(id, { status: "squish" });
+      }
+      return row.arr === null ? null : (JSON.parse(String(row.arr)) as ArrMatch);
+    });
   }
 }

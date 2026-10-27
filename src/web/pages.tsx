@@ -1,6 +1,8 @@
+import { useState } from "react";
 import type { HealthCheck, SlotStatus, StatusResponse } from "../shared/api.js";
 import type { SettingsResponse, SettingsSection } from "../shared/settings.js";
 import { toolPages } from "../tools/web.js";
+import { api } from "./api.js";
 import { Card, Dot, JobList, JobSummary } from "./components.js";
 import { ago } from "./format.js";
 import { useApi } from "./live.js";
@@ -31,20 +33,28 @@ export function Dashboard() {
     <>
       <div className={`banner ${status.health.overall}`}>
         <Dot status={status.health.overall} />
-        {problems.length > 0
-          ? `${problems.length} problem${problems.length > 1 ? "s" : ""} need${problems.length > 1 ? "" : "s"} attention`
-          : warnings.length > 0
-            ? `Running, with ${warnings.length} thing${warnings.length > 1 ? "s" : ""} to set up`
-            : "All good"}
+        {status.schedule.paused
+          ? "Paused — nothing runs until you resume"
+          : problems.length > 0
+            ? `${problems.length} problem${problems.length > 1 ? "s" : ""} need${problems.length > 1 ? "" : "s"} attention`
+            : warnings.length > 0
+              ? `Running, with ${warnings.length} thing${warnings.length > 1 ? "s" : ""} to set up`
+              : "All good"}
+        {status.schedule.paused && <PauseButton paused />}
       </div>
 
-      <div className="grid">
-        <Card title="Encoders">
-          {encoders.map((slot) => (
-            <SlotView key={slot.id} slot={slot} />
-          ))}
-        </Card>
+      <Card
+        title="Encoders"
+        className="encoders"
+        actions={!status.schedule.paused && <PauseButton paused={false} />}
+      >
+        {encoders.map((slot) => (
+          <SlotView key={slot.id} slot={slot} />
+        ))}
+      </Card>
 
+      {/* Columns that fill top to bottom, so a tall card doesn't leave gaps beside it. */}
+      <div className="columns">
         <Card title="Plex">
           <PlexView status={status} />
         </Card>
@@ -70,14 +80,6 @@ export function Dashboard() {
           </dl>
         </Card>
 
-        <Card title="Health">
-          <ul className="checks">
-            {status.health.checks.map((check) => (
-              <CheckRow key={check.id} check={check} />
-            ))}
-          </ul>
-        </Card>
-
         {status.tools.map((tool) => (
           <Card
             key={tool.id}
@@ -95,8 +97,46 @@ export function Dashboard() {
             ))}
           </Card>
         ))}
+
+        <Card title="Health">
+          <ul className="checks">
+            {status.health.checks.map((check) => (
+              <CheckRow key={check.id} check={check} />
+            ))}
+          </ul>
+        </Card>
       </div>
     </>
+  );
+}
+
+/** Pauses or resumes all work (the schedule's "paused" setting). */
+function PauseButton({ paused }: { paused: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.put("/api/settings/schedule", { paused: !paused });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="pause-toggle">
+      {error && <span className="bad small">{error}</span>}
+      <button
+        type="button"
+        className={paused ? "primary small" : "small"}
+        disabled={busy}
+        onClick={() => void toggle()}
+      >
+        {paused ? "Resume" : "Pause all"}
+      </button>
+    </span>
   );
 }
 

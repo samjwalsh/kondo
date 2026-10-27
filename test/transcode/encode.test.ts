@@ -243,7 +243,7 @@ describe.skipIf(!hasFfmpeg)("encoding a file (needs ffmpeg with x264/x265)", () 
     settings.register(encodingSettings);
     settings.register(transcodeSettings);
     settings.update("transcode", { roots: library, minSavingsPercent: 1 });
-    settings.update("encoding", { cpuThreads: 4 });
+    settings.update("encoding", { cpuThreads: 4, cpuCrf: 28 });
     const store = new LibraryStore(db);
     await runScan({ ...fakeJob({ fileId: 0, name: "" }), payload: {} } as JobContext<unknown>, {
       store,

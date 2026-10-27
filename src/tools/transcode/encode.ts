@@ -28,6 +28,8 @@ export interface EncodeOptions {
   cpuThreads: number;
   /** x265 speed preset; tests use a fast one. */
   cpuPreset?: string;
+  /** x265 CRF for the CPU slot. */
+  cpuCrf?: number;
   version: string;
   now?: Date;
 }
@@ -51,6 +53,45 @@ function clearStatistics(stream: string): string[] {
     `-metadata:s:${stream}`,
     `${tag}-eng=`,
   ]);
+}
+
+/** The video encoder settings, shared by real encodes and the CPU calibration. */
+export function videoArgs(
+  encoder: "gpu" | "cpu",
+  tenBit: boolean,
+  o: { cpuThreads: number; cpuPreset?: string; cpuCrf?: number },
+): string[] {
+  if (encoder === "gpu") {
+    // Squish's settings: NVENC H.265, constant quality 32, "hq" preset.
+    return [
+      "-c:v",
+      "hevc_nvenc",
+      "-preset",
+      "hq",
+      "-rc",
+      "vbr_hq",
+      "-cq",
+      "32",
+      "-b:v",
+      "0",
+      "-profile:v",
+      tenBit ? "main10" : "main",
+      "-pix_fmt",
+      tenBit ? "p010le" : "yuv420p",
+    ];
+  }
+  return [
+    "-c:v",
+    "libx265",
+    "-preset",
+    o.cpuPreset ?? "medium",
+    "-crf",
+    String(o.cpuCrf ?? 28),
+    "-x265-params",
+    `pools=${o.cpuThreads}:log-level=error`,
+    "-pix_fmt",
+    tenBit ? "yuv420p10le" : "yuv420p",
+  ];
 }
 
 /** The full ffmpeg command line for a plan (without the ffmpeg binary itself). */
@@ -82,38 +123,7 @@ export function buildEncodeArgs(o: EncodeOptions): string[] {
 
   // Video ------------------------------------------------------------------------
   if (o.crop) args.push("-vf", `crop=${o.crop.width}:${o.crop.height}:${o.crop.x}:${o.crop.y}`);
-  if (o.encoder === "gpu") {
-    // Squish's settings: NVENC H.265, constant quality 32, "hq" preset.
-    args.push(
-      "-c:v",
-      "hevc_nvenc",
-      "-preset",
-      "hq",
-      "-rc",
-      "vbr_hq",
-      "-cq",
-      "32",
-      "-b:v",
-      "0",
-      "-profile:v",
-      tenBit ? "main10" : "main",
-      "-pix_fmt",
-      tenBit ? "p010le" : "yuv420p",
-    );
-  } else {
-    args.push(
-      "-c:v",
-      "libx265",
-      "-preset",
-      o.cpuPreset ?? "medium",
-      "-crf",
-      "24",
-      "-x265-params",
-      `pools=${o.cpuThreads}:log-level=error`,
-      "-pix_fmt",
-      tenBit ? "yuv420p10le" : "yuv420p",
-    );
-  }
+  args.push(...videoArgs(o.encoder, tenBit, o));
   args.push("-disposition:v:0", "default", ...clearStatistics("v:0"));
 
   // Audio --------------------------------------------------------------------------
@@ -402,6 +412,8 @@ export async function saveFrames(
 export interface EncodePayload {
   fileId: number;
   name: string;
+  /** Which slot encodes it (older jobs: the GPU). */
+  encoder?: "gpu" | "cpu";
 }
 
 export interface EncodeDeps {
@@ -409,7 +421,8 @@ export interface EncodeDeps {
   settings: SettingsStore;
   workRoot: string;
   version: string;
-  encoder: "gpu" | "cpu";
+  /** Used when the job doesn't say. */
+  encoder?: "gpu" | "cpu";
   /** For tests: a faster x265 preset. */
   cpuPreset?: string;
   /** Called when the job ends, however it ends (the feeder tops up the queue). */
@@ -462,7 +475,13 @@ export async function runEncode(
     const encoding = deps.settings.values("encoding");
     const tools = { ffmpeg: String(encoding.ffmpegPath), ffprobe: String(encoding.ffprobePath) };
     const minSaving = Number(deps.settings.values("transcode").minSavingsPercent);
-    const encoderName = deps.encoder === "gpu" ? "hevc_nvenc" : "libx265";
+    const encoder = job.payload.encoder ?? deps.encoder ?? "gpu";
+    const cpuCrf = Number(encoding.cpuCrf);
+    const cpuPreset = deps.cpuPreset ?? String(encoding.cpuPreset);
+    if (encoder === "cpu" && !(cpuCrf > 0)) {
+      throw new Error("The CPU encoder isn't calibrated yet (Settings → Encoders → CPU quality)");
+    }
+    const encoderName = encoder === "gpu" ? "hevc_nvenc" : `libx265 (CRF ${cpuCrf}, ${cpuPreset})`;
     const workDir = workDirFor(deps.workRoot, fileId);
     const output = path.join(workDir, "output.mkv");
     await rm(workDir, { recursive: true, force: true });
@@ -483,9 +502,10 @@ export async function runEncode(
         info: file.info,
         plan: file.plan,
         crop,
-        encoder: deps.encoder,
+        encoder,
         cpuThreads: Number(encoding.cpuThreads),
-        cpuPreset: deps.cpuPreset,
+        cpuPreset,
+        cpuCrf,
         version: deps.version,
       });
       job.log(`Encoding with ${encoderName}`);
@@ -494,7 +514,8 @@ export async function runEncode(
       const fpsSamples: number[] = [];
       const live = { fps: 0, speed: "" };
       const result = await job.run(tools.ffmpeg, args, {
-        nice: 10,
+        // The CPU slot shares the processor with Plex: lowest priority.
+        nice: encoder === "cpu" ? 19 : 10,
         onStdoutLine: (line) => {
           const [key, value = ""] = line.split("=");
           if (key === "fps") {

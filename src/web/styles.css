@@ -66,6 +66,9 @@ h2 {
 .bad {
   color: var(--bad);
 }
+.warn {
+  color: var(--warn);
+}
 .tight {
   margin: 4px 0;
 }
@@ -413,6 +416,27 @@ input[aria-invalid="true"] {
   gap: 4px;
   margin-top: 6px;
 }
+.slot-job > span {
+  overflow-wrap: anywhere;
+}
+.card.encoders {
+  margin-bottom: 16px;
+}
+.columns {
+  columns: 320px;
+  column-gap: 16px;
+}
+.columns > .card {
+  break-inside: avoid;
+  margin-bottom: 16px;
+}
+.pause-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
 
 .checks,
 .sessions,
@@ -461,9 +485,13 @@ input[aria-invalid="true"] {
 }
 .job-progress {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   font-size: 0.85rem;
+}
+.job-progress .progress {
+  flex: 1 1 160px;
 }
 .job-progress .muted {
   white-space: nowrap;
@@ -752,10 +780,57 @@ table.tracks .badge {
   border-radius: 6px;
   border: 1px solid var(--border);
 }
+.history {
+  padding: 4px 18px;
+}
+.history details {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+}
+.history details:first-child {
+  border-top: 0;
+}
+.history summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  cursor: pointer;
+}
+.history-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.squish-titles details {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+.squish-titles summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.squish-items {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+.squish-items .clash,
+.squish-items .error {
+  color: var(--warn);
+}
+.pill.outcome.squish {
+  color: var(--muted);
+}
 .pill.outcome.awaiting-approval {
   color: var(--accent);
 }
-.pill.outcome.approved {
+.pill.outcome.approved,
+.pill.outcome.swapping,
+.pill.outcome.done {
   color: var(--good);
 }
 .pill.outcome.failed {

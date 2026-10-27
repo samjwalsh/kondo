@@ -96,6 +96,8 @@ export interface ScheduleInfo {
   idleMode: boolean;
   idleQuietMinutes: number;
   localTime: string;
+  /** Sam paused all work by hand. */
+  paused: boolean;
 }
 
 export interface ToolCard {

@@ -10,9 +10,13 @@ import {
   type FileSort,
   type FileSummary,
   type FilesPage,
+  type HistoryItem,
   type LibrarySummary,
   OUTCOME_LABELS,
   type PlannedTrack,
+  type SquishItem,
+  type SquishSummary,
+  type SquishTitle,
 } from "./shared.js";
 
 const PAGE = 50;
@@ -55,15 +59,19 @@ export function TranscodePage() {
         </button>
       </div>
       <p className="muted">
-        Encoded results wait here for your approval. Nothing in the library is changed yet.
+        Encoded results replace the originals once approved: by you, or automatically if Settings →
+        Transcode says so.
       </p>
 
       {error && <p className="bad">{error}</p>}
       <Approvals />
+      <RecentlyReplaced />
       {summary && <Summary summary={summary} onPick={pick} />}
 
       <h2>Recent work</h2>
       <JobList tool="transcode" limit={5} empty="Nothing yet." />
+
+      <SquishTidy />
 
       <h2>Files</h2>
       <FileBrowser
@@ -82,8 +90,8 @@ const encodeFinished = (event: {
 }) =>
   event.type === "job.updated" &&
   event.job?.tool === "transcode" &&
-  event.job.type === "encode" &&
-  (event.job.state === "succeeded" || event.job.state === "failed");
+  (event.job.type === "encode" || event.job.type === "swap") &&
+  event.job.state !== "queued";
 
 function Approvals() {
   const { data, reload } = useApi<ApprovalItem[]>("/api/tools/transcode/approvals", encodeFinished);
@@ -104,14 +112,218 @@ function Approvals() {
 const clock = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
+/** Original and Kondo's frame side by side, at each saved time. */
+function Frames({ fileId, times }: { fileId: number; times: number[] }) {
+  const frame = (kind: "source" | "output", i: number) =>
+    `/api/tools/transcode/work/${fileId}/frame-${kind}-${i}.jpg`;
+  return (
+    <div className="frames">
+      {times.map((at, i) => (
+        <figure key={at}>
+          <div className="pair">
+            <a href={frame("source", i)} target="_blank" rel="noreferrer">
+              <img src={frame("source", i)} alt={`Original at ${clock(at)}`} loading="lazy" />
+            </a>
+            <a href={frame("output", i)} target="_blank" rel="noreferrer">
+              <img
+                src={frame("output", i)}
+                alt={`Kondo's version at ${clock(at)}`}
+                loading="lazy"
+              />
+            </a>
+          </div>
+          <figcaption className="muted small">
+            Original (left) and Kondo (right) at {clock(at)}
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+const swapFinished = (event: {
+  type: string;
+  job?: { tool: string; type: string; state: string };
+}) =>
+  event.type === "job.updated" &&
+  event.job?.tool === "transcode" &&
+  event.job.type === "swap" &&
+  event.job.state === "succeeded";
+
+const squishJobChanged = (event: {
+  type: string;
+  job?: { tool: string; type: string; state: string };
+}) =>
+  event.type === "job.updated" &&
+  event.job?.tool === "transcode" &&
+  event.job.type.startsWith("squish-");
+
+/** The one-off rename of Squish's `… [SQUISH].mkv` files back to their plain names. */
+function SquishTidy() {
+  const { data: s } = useApi<SquishSummary>("/api/tools/transcode/squish", squishJobChanged);
+  const [error, setError] = useState<string | null>(null);
+  if (!s) return null;
+  // All done: nothing more to show (a few clashes may remain, listed for the record).
+  if (s.checkedAt && s.pending === 0) return null;
+
+  const post = async (url: string, body?: unknown) => {
+    setError(null);
+    try {
+      await api.post(url, body);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <section>
+      <h2>Tidy [SQUISH] names</h2>
+      <div className="card squish">
+        <p>
+          Squish added <code>[SQUISH]</code> to the names of files it encoded. Renaming them back
+          lets Bazarr's subtitles match again. Kondo only renames: contents never change. Each title
+          is renamed in one go, then Sonarr/Radarr and Plex are asked to rescan it.
+        </p>
+        {s.checkedAt ? (
+          <p>
+            <strong>{count(s.pending)}</strong> file(s) in {count(s.titles.length)} title(s) to
+            rename
+            {s.clashes > 0 && (
+              <>
+                ; <span className="warn">{count(s.clashes)} left alone</span> because the plain name
+                is already taken
+              </>
+            )}
+            {s.done > 0 && <> · {count(s.done)} done</>}.{" "}
+            <span className="muted small">Checked {ago(s.checkedAt)}.</span>
+          </p>
+        ) : (
+          <p className="muted">Not checked yet.</p>
+        )}
+        <div className="form-actions">
+          {s.pending > 0 && (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void post("/api/tools/transcode/squish/rename", {})}
+            >
+              Rename all
+            </button>
+          )}
+          <button type="button" onClick={() => void post("/api/tools/transcode/squish/check")}>
+            {s.checkedAt ? "Check again" : "Check the library"}
+          </button>
+          {error && <span className="bad">{error}</span>}
+        </div>
+        {s.titles.length > 0 && (
+          <div className="squish-titles">
+            {s.titles.map((t) => (
+              <SquishTitleRow
+                key={t.key}
+                title={t}
+                onRename={() => void post("/api/tools/transcode/squish/rename", { title: t.key })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SquishTitleRow({ title: t, onRename }: { title: SquishTitle; onRename: () => void }) {
+  const [items, setItems] = useState<SquishItem[] | null>(null);
+  const load = () => {
+    if (!items) {
+      void api
+        .get<SquishItem[]>(`/api/tools/transcode/squish/items?title=${encodeURIComponent(t.key)}`)
+        .then(setItems);
+    }
+  };
+  return (
+    <details onToggle={(e) => (e.currentTarget.open ? load() : undefined)}>
+      <summary>
+        <strong>{t.name}</strong>
+        <span className="muted small">
+          {count(t.pending)} to rename
+          {t.clashes > 0 && <span className="warn"> · {t.clashes} left alone</span>}
+        </span>
+      </summary>
+      {t.pending > 0 && (
+        <button type="button" className="small" onClick={onRename}>
+          Rename this title
+        </button>
+      )}
+      {items ? (
+        <ul className="squish-items small">
+          {items.map((item) => (
+            <li key={item.path} className={item.status}>
+              <span>{item.path}</span>
+              <span className="muted">
+                {" "}
+                → {item.target}
+                {item.status !== "pending" && ` (${SQUISH_STATUS[item.status]})`}
+                {item.error && `: ${item.error}`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">Loading…</p>
+      )}
+    </details>
+  );
+}
+
+const SQUISH_STATUS: Record<SquishItem["status"], string> = {
+  pending: "to do",
+  clash: "name taken, left alone",
+  done: "renamed",
+  gone: "file gone",
+  error: "failed",
+};
+
+function RecentlyReplaced() {
+  const { data } = useApi<HistoryItem[]>("/api/tools/transcode/history?limit=20", swapFinished);
+  if (!data || data.length === 0) return null;
+  return (
+    <section>
+      <h2>Recently replaced</h2>
+      <div className="card history">
+        {data.map((item) => {
+          const parts = item.path.split("/");
+          const name = parts.pop() ?? item.path;
+          return (
+            <details key={`${item.fileId}-${item.swappedAt}`}>
+              <summary>
+                <span className="history-name">
+                  <strong>{name}</strong>
+                  <span className="muted small"> {parts.slice(-2).join("/")}</span>
+                </span>
+                <span className="small">
+                  {bytes(item.sourceBytes)} → {bytes(item.outputBytes)}{" "}
+                  <span className="muted">· {ago(item.swappedAt)}</span>
+                </span>
+              </summary>
+              {item.details && item.details.frames.length > 0 ? (
+                <Frames fileId={item.fileId} times={item.details.frames} />
+              ) : (
+                <p className="muted small">No comparison frames kept for this one.</p>
+              )}
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const d = item.outcome.details;
   const name = item.file.path.split("/").pop() ?? item.file.path;
-  const frame = (kind: "source" | "output", i: number) =>
-    `/api/tools/transcode/work/${item.file.id}/frame-${kind}-${i}.jpg`;
 
   const act = async (action: "approve" | "reject") => {
     setBusy(true);
@@ -148,31 +360,35 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
             ✓ Same length · ✓ {d.verify.audio.found} audio and {d.verify.subtitles.found} subtitle
             track(s) as planned · ✓ Plays cleanly
           </p>
-          <div className="frames">
-            {d.frames.map((at, i) => (
-              <figure key={at}>
-                <div className="pair">
-                  <a href={frame("source", i)} target="_blank" rel="noreferrer">
-                    <img src={frame("source", i)} alt={`Original at ${clock(at)}`} loading="lazy" />
-                  </a>
-                  <a href={frame("output", i)} target="_blank" rel="noreferrer">
-                    <img
-                      src={frame("output", i)}
-                      alt={`Kondo's version at ${clock(at)}`}
-                      loading="lazy"
-                    />
-                  </a>
-                </div>
-                <figcaption className="muted small">
-                  Original (left) and Kondo (right) at {clock(at)}
-                </figcaption>
-              </figure>
-            ))}
-          </div>
+          <p className="small watch">
+            Watch:{" "}
+            <a
+              href={`/api/tools/transcode/files/${item.file.id}/original`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              original
+            </a>{" "}
+            ·{" "}
+            <a
+              href={`/api/tools/transcode/work/${item.file.id}/output.mkv`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Kondo's version
+            </a>{" "}
+            <span className="muted">
+              — browsers often can't play these; copy the link into VLC (Media → Open Network
+              Stream).
+            </span>
+          </p>
+          <Frames fileId={item.file.id} times={d.frames} />
         </>
       )}
-      {item.outcome.status === "approved" ? (
-        <p className="good">Approved. It's swapped into the library once that step is built.</p>
+      {item.outcome.status === "swapping" ? (
+        <p className="good">Swapping into the library…</p>
+      ) : item.outcome.status === "approved" ? (
+        <p className="good">Approved. It replaces the original as soon as nobody is watching it.</p>
       ) : (
         <div className="form-actions">
           <button
@@ -191,6 +407,9 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
           </button>
           {error && <span className="bad">{error}</span>}
         </div>
+      )}
+      {item.outcome.status === "awaiting-approval" && item.outcome.error && (
+        <p className="bad small">{item.outcome.error}</p>
       )}
       {showPlan && <FileDetailView id={item.file.id} />}
     </article>
@@ -235,6 +454,13 @@ function Summary({
           <strong className="good">{bytes(Math.max(0, saving))}</strong>
           <span className="muted">once their torrents are gone too</span>
         </div>
+        {s.done.count > 0 && (
+          <div className="tile">
+            <span className="tile-label">Done</span>
+            <strong className="good">{bytes(s.done.savedBytes)} saved</strong>
+            <span className="muted">{count(s.done.count)} file(s) replaced</span>
+          </div>
+        )}
         <button type="button" className="tile" onClick={() => onPick("skip")}>
           <span className="tile-label">Skipped</span>
           <strong>{count(s.skipped.count)}</strong>

@@ -8,6 +8,7 @@ export type ReasonCode =
   | "h265-high-bitrate"
   | "already-efficient"
   | "kondo-done"
+  | "squish-done"
   | "hdr"
   | "above-1080p"
   | "no-video"
@@ -24,6 +25,7 @@ export const REASON_LABELS: Record<ReasonCode, string> = {
   "h265-high-bitrate": "H.265 above the bitrate threshold",
   "already-efficient": "Already H.265/AV1 at a good size",
   "kondo-done": "Already done by Kondo",
+  "squish-done": "Already done by Squish",
   hdr: "HDR or Dolby Vision (not handled yet)",
   "above-1080p": "Above 1080p (not handled yet)",
   "no-video": "No video stream",
@@ -147,7 +149,10 @@ export type OutcomeStatus =
   | "approved"
   | "rejected"
   | "not-worth-it"
-  | "failed";
+  | "failed"
+  | "swapping"
+  | "done"
+  | "squish";
 
 export const OUTCOME_LABELS: Record<OutcomeStatus, string> = {
   "awaiting-approval": "Waiting for approval",
@@ -155,6 +160,9 @@ export const OUTCOME_LABELS: Record<OutcomeStatus, string> = {
   rejected: "Rejected",
   "not-worth-it": "Not worth it",
   failed: "Failed",
+  swapping: "Swapping in",
+  done: "Done",
+  squish: "Done by Squish",
 };
 
 export interface VerifyReport {
@@ -192,6 +200,18 @@ export interface Outcome {
   updatedAt: string;
 }
 
+/** A file swapped into the library. */
+export interface HistoryItem {
+  fileId: number;
+  /** Full path of the new file. */
+  path: string;
+  sourceBytes: number;
+  outputBytes: number;
+  encoder: string | null;
+  swappedAt: string;
+  details: EncodeDetails | null;
+}
+
 export interface ApprovalItem {
   file: FileSummary;
   outcome: Outcome;
@@ -227,6 +247,8 @@ export interface LibrarySummary {
   problems: number;
   notYetRead: number;
   awaitingApproval: number;
+  /** Results swapped into the library so far. */
+  done: { count: number; savedBytes: number };
   byReason: { code: ReasonCode; label: string; count: number; bytes: number }[];
   lastScan: ScanInfo | null;
 }
@@ -236,5 +258,71 @@ export interface FilesPage {
   files: FileSummary[];
 }
 
+export type SquishStatus = "pending" | "clash" | "done" | "gone" | "error";
+
+/** One series or movie folder with files still named `… [SQUISH].…`. */
+export interface SquishTitle {
+  /** Full path of the series/movie folder. */
+  key: string;
+  name: string;
+  pending: number;
+  clashes: number;
+  done: number;
+}
+
+export interface SquishItem {
+  /** Path relative to the title's folder. */
+  path: string;
+  /** The new file name. */
+  target: string;
+  status: SquishStatus;
+  error: string | null;
+}
+
+export interface SquishSummary {
+  checkedAt: string | null;
+  titles: SquishTitle[];
+  pending: number;
+  clashes: number;
+  done: number;
+}
+
 export type FileFilter = "transcode" | "skip" | "error" | "all";
 export type FileSort = "saving" | "size" | "path";
+
+/** One clip encoded both ways, compared against the original. */
+export interface CalibrationSample {
+  fileId: number;
+  name: string;
+  /** e.g. "1080p, 8.2 Mb/s" */
+  label: string;
+  clipStartS: number;
+  clipSeconds: number;
+  gpu: CalibrationPoint;
+  cpu: (CalibrationPoint & { crf: number })[];
+}
+
+export interface CalibrationPoint {
+  /** SSIM against the original, in dB (higher is closer). */
+  ssimDb: number;
+  /** Video bitrate of the result. */
+  kbps: number;
+  /** Encoding speed as a multiple of real time. */
+  speed: number;
+}
+
+export interface Calibration {
+  finishedAt: string;
+  preset: string;
+  crfs: number[];
+  samples: CalibrationSample[];
+  /** Average SSIM of the GPU's results. */
+  gpuSsimDb: number;
+  /** The highest CRF whose average SSIM still matches the GPU's, or null if none tested did. */
+  recommendedCrf: number | null;
+  /** How the CPU's files compare in size at that CRF, e.g. -28 for 28% smaller. */
+  sizeVsGpuPercent: number | null;
+  /** Average CPU speed at the recommended CRF. */
+  cpuSpeed: number | null;
+  note: string | null;
+}

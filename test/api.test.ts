@@ -42,6 +42,20 @@ describe("api", () => {
     expect(body.health.checks.find((c: { id: string }) => c.id === "plex").status).toBe("warn");
   });
 
+  it("pauses every slot, the general one too, until resumed", async () => {
+    const { app } = await kondo();
+    const pause = (paused: boolean) =>
+      app.inject({ method: "PUT", url: "/api/settings/schedule", payload: { paused } });
+    expect((await pause(true)).statusCode).toBe(200);
+    let body = (await app.inject({ method: "GET", url: "/api/status" })).json();
+    expect(body.schedule.paused).toBe(true);
+    for (const slot of body.slots)
+      expect(slot).toMatchObject({ allowed: false, reason: "Paused by you" });
+    await pause(false);
+    body = (await app.inject({ method: "GET", url: "/api/status" })).json();
+    expect(body.slots.find((s: { id: string }) => s.id === "general").allowed).toBe(true);
+  });
+
   it("validates settings and never returns secrets", async () => {
     const { app } = await kondo();
     const bad = await app.inject({

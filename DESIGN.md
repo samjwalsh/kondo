@@ -180,8 +180,18 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
   quality 32, high-quality preset, look-ahead, crop detection). First approval-mode
   files are compared against `[SQUISH]` output of similar episodes.
 - **CPU slot** (x265) is calibrated to the *same visual quality*, not the same
-  number: on a few sample files, pick the x265 CRF whose SSIM against the source
-  matches what NVENC CQ 32 achieves, then compare sizes.
+  number. The calibration job takes a 60 s clip (at 40 %) from typical files still
+  to transcode (high, median and low bitrate 1080p; a 720p and an SD if there are
+  any; sizes judged by width so cropped films count as 1080p), encodes it
+  with NVENC CQ 32 and with x265 at CRF 22/25/28/31, and measures each against the
+  original with SSIM. It recommends the highest CRF (in half steps, rounded down)
+  whose average SSIM still matches NVENC's, and reports the size difference and
+  speed there. The CPU slot stays unused until a CRF is set. Result on this
+  library (Oct 2026, medium preset): CRF 25, files 28 % smaller than NVENC's, about
+  2× real time. The job has no page of its own (it's a one-off); it can be run
+  again with `POST /api/tools/transcode/calibration`.
+- Each encoder has at most one file queued, so files go to whichever frees up
+  first; when both are free the CPU gets the biggest saving.
 - **Re-encode thresholds** for files that are already H.265/AV1 (video bitrate):
 
   | Resolution | Re-encode above | Why |
@@ -228,41 +238,60 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
 
 ### Swap and crash recovery
 
-Each step is recorded in SQLite before it happens:
+Approving a result queues a **swap** job (general slot). Each step is recorded in
+SQLite before it happens:
 
-1. Ask Plex for active sessions; if anyone is playing (or paused on) this file,
-   wait and retry later.
-2. Copy the result next to the original as a hidden temp file
-   (`.<name>.kondo-<id>.mkv`, same filesystem as the original) and check its size.
-3. Record `SWAPPING` (source, temp, final paths).
-4. `rename(temp → final)` — atomic. Same name (mkv → mkv): the episode is never
-   missing, even for an instant.
-5. If the name changed (mp4 → mkv), unlink the source.
-6. Record `DONE`; delete the work folder; trigger Plex + Sonarr/Radarr rescans.
+1. Check the original is exactly what was encoded (same size and modified time).
+   If it changed (e.g. Sonarr upgraded it) or is gone, the result is thrown away
+   and the next scan looks at the file again.
+2. Ask Plex who's watching; if anyone is playing (or paused on) this file, or Plex
+   can't be asked, wait and try again later (every 5 minutes).
+3. Copy the result next to the original as a hidden temp file
+   (`.<name>.kondo-<id>.mkv`, same filesystem as the original), check its size,
+   and give it the original's permissions. Check Plex again.
+4. Record `SWAPPING` (source, temp, final paths).
+5. `rename(temp → final)` — atomic. Same name (mkv → mkv): the episode is never
+   missing, even for an instant. A torrent hardlinked to the original keeps the
+   original's data.
+6. If the name changed (mp4 → mkv), unlink the source.
+7. Record `DONE` (and the saving in a history table); point the file's row at the
+   new file so the next scan reads it afresh; delete the work folder; ask Plex to
+   rescan the folder and Sonarr/Radarr to rescan the series/movie.
+
+If a step before 4 fails, the temp file is removed and the result goes back to
+waiting for approval with the reason shown. Cancelling a swap does the same.
+
+Scans and swaps take turns (a lock), so a scan never sees a file half-swapped.
 
 On start-up Kondo finishes or rolls back anything left mid-way:
-`ENCODING` → delete the temp file, requeue; `VERIFIED`/`AWAITING_APPROVAL` →
-re-verify; `SWAPPING` → inspect what's on disk (tagged final present? source
-present?) and complete the remaining step. Stray `.kondo-*` temp files with no job
-are cleaned up.
+`ENCODING` → delete the work folder, requeue; `SWAPPING` → inspect what's on disk
+and complete the remaining step (temp present → rename; temp gone and the new file
+in place → unlink the old name if needed; neither → nothing changed, back to
+approved). Plex can't veto finishing a swap that's already part-done. Stray
+`.kondo-*` temp files are removed by the next scan unless their swap is part-way.
 
 ### One-off tidy of `[SQUISH]` files
 
-A separate action with a dry-run list first:
+A separate action on the Transcode page, with a check (dry-run list) first:
 
-- Rename `X [SQUISH].mkv` → `X.mkv` (and matching `X [SQUISH].*.srt` sidecars)
-  when the target name is free; conflicts are listed, not touched.
-- Work one series/movie at a time: rename all its files, then ask Sonarr/Radarr
-  to rescan that series/movie, so the old and new names are seen in the same scan
-  and the episode never looks "missing" (which could trigger a re-download).
-  Then a Plex rescan of that folder. Watch history stays with the episode.
+- **Check** walks the library (skipping "never touch" folders) and lists every file
+  with ` [SQUISH]` in its name, grouped by series/movie folder. Squish tagged
+  subtitles, `.nfo`s and sample screenshots too, so all of them are included. A
+  file whose plain name is already taken (e.g. Bazarr's old `X.en.srt` next to
+  `X [SQUISH].en.srt`) is a clash: listed, never touched.
+- **Rename** one title, or all of them one title at a time: rename its files, then
+  ask Sonarr/Radarr to rescan that series/movie and Plex that folder, so the old and
+  new names are seen in the same scan and the episode never looks "missing" (Sonarr
+  only unmonitors a file that's still missing at the end of its rescan). A title
+  with a file being watched is left for later. Scans, swaps and renames take turns.
 - Bazarr's orphaned `X.*.srt` files re-attach automatically because the names
-  match again.
-- Record each file in Kondo's database as `legacy-squish`, but **don't write the
-  Kondo tag into them**: that would mean editing 5,644 files (3 TB) in place or
-  copying them all, for no gain — they're H.265 below the re-encode threshold, so
-  the decide step skips them even if the database were lost. (Squish already
-  stripped their subtitles and extra audio; that can't be undone.)
+  match again. Watch history stays with the episode.
+- Kondo moves its own record of each video to the new name (same size and time, so
+  it isn't read again) and remembers an H.265 one as **done by Squish**: it is never
+  re-encoded, even if the thresholds are lowered later. **Don't write the Kondo tag
+  into them**: that would mean editing 5,600 files (3 TB) in place for no gain.
+  A `[SQUISH]` name alone doesn't prove Squish encoded it (it renamed at least one
+  H.264 file without encoding it), so only H.265 files count.
 
 ## UI
 
@@ -302,7 +331,13 @@ Sonarr/Radarr webhooks call the VM directly on the LAN with a shared secret.
 | M4 | Swap + recovery | Approved files swapped safely; power-cut recovery tested; Squish's cron removed |
 | M5 | CPU slot | Both encoders running; quality calibrated side by side |
 | M6 | `[SQUISH]` tidy | Dry run reviewed, renames done in batches |
-| M7 | Automatic mode | Approval switched off once trusted |
+| M7 | Automatic mode | Approval switched off once trusted (built straight after M4) |
+
+Automatic mode approves every result that passes its checks (same length, the
+planned tracks, decodes cleanly, at least the minimum saving), optionally at most N
+swaps per rolling 24 hours. A result sent back after a failed swap still waits for a
+person. The latest 50 swaps keep their comparison frames under "Recently replaced"
+for spot checks after the fact.
 
 Later, if wanted: torrent tool; RX 5700 XT encoder; VM upgrade.
 
