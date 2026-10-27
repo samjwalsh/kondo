@@ -14,6 +14,9 @@ import {
   type LibrarySummary,
   OUTCOME_LABELS,
   type PlannedTrack,
+  type SquishItem,
+  type SquishSummary,
+  type SquishTitle,
 } from "./shared.js";
 
 const PAGE = 50;
@@ -67,6 +70,8 @@ export function TranscodePage() {
 
       <h2>Recent work</h2>
       <JobList tool="transcode" limit={5} empty="Nothing yet." />
+
+      <SquishTidy />
 
       <h2>Files</h2>
       <FileBrowser
@@ -144,6 +149,138 @@ const swapFinished = (event: {
   event.job?.tool === "transcode" &&
   event.job.type === "swap" &&
   event.job.state === "succeeded";
+
+const squishJobChanged = (event: {
+  type: string;
+  job?: { tool: string; type: string; state: string };
+}) =>
+  event.type === "job.updated" &&
+  event.job?.tool === "transcode" &&
+  event.job.type.startsWith("squish-");
+
+/** The one-off rename of Squish's `… [SQUISH].mkv` files back to their plain names. */
+function SquishTidy() {
+  const { data: s } = useApi<SquishSummary>("/api/tools/transcode/squish", squishJobChanged);
+  const [error, setError] = useState<string | null>(null);
+  if (!s) return null;
+  if (s.checkedAt && s.pending === 0 && s.clashes === 0) return null;
+
+  const post = async (url: string, body?: unknown) => {
+    setError(null);
+    try {
+      await api.post(url, body);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <section>
+      <h2>Tidy [SQUISH] names</h2>
+      <div className="card squish">
+        <p>
+          Squish added <code>[SQUISH]</code> to the names of files it encoded. Renaming them back
+          lets Bazarr's subtitles match again. Kondo only renames: contents never change. Each title
+          is renamed in one go, then Sonarr/Radarr and Plex are asked to rescan it.
+        </p>
+        {s.checkedAt ? (
+          <p>
+            <strong>{count(s.pending)}</strong> file(s) in {count(s.titles.length)} title(s) to
+            rename
+            {s.clashes > 0 && (
+              <>
+                ; <span className="warn">{count(s.clashes)} left alone</span> because the plain name
+                is already taken
+              </>
+            )}
+            {s.done > 0 && <> · {count(s.done)} done</>}.{" "}
+            <span className="muted small">Checked {ago(s.checkedAt)}.</span>
+          </p>
+        ) : (
+          <p className="muted">Not checked yet.</p>
+        )}
+        <div className="form-actions">
+          {s.pending > 0 && (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void post("/api/tools/transcode/squish/rename", {})}
+            >
+              Rename all
+            </button>
+          )}
+          <button type="button" onClick={() => void post("/api/tools/transcode/squish/check")}>
+            {s.checkedAt ? "Check again" : "Check the library"}
+          </button>
+          {error && <span className="bad">{error}</span>}
+        </div>
+        {s.titles.length > 0 && (
+          <div className="squish-titles">
+            {s.titles.map((t) => (
+              <SquishTitleRow
+                key={t.key}
+                title={t}
+                onRename={() => void post("/api/tools/transcode/squish/rename", { title: t.key })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SquishTitleRow({ title: t, onRename }: { title: SquishTitle; onRename: () => void }) {
+  const [items, setItems] = useState<SquishItem[] | null>(null);
+  const load = () => {
+    if (!items) {
+      void api
+        .get<SquishItem[]>(`/api/tools/transcode/squish/items?title=${encodeURIComponent(t.key)}`)
+        .then(setItems);
+    }
+  };
+  return (
+    <details onToggle={(e) => (e.currentTarget.open ? load() : undefined)}>
+      <summary>
+        <strong>{t.name}</strong>
+        <span className="muted small">
+          {count(t.pending)} to rename
+          {t.clashes > 0 && <span className="warn"> · {t.clashes} left alone</span>}
+        </span>
+      </summary>
+      {t.pending > 0 && (
+        <button type="button" className="small" onClick={onRename}>
+          Rename this title
+        </button>
+      )}
+      {items ? (
+        <ul className="squish-items small">
+          {items.map((item) => (
+            <li key={item.path} className={item.status}>
+              <span>{item.path}</span>
+              <span className="muted">
+                {" "}
+                → {item.target}
+                {item.status !== "pending" && ` (${SQUISH_STATUS[item.status]})`}
+                {item.error && `: ${item.error}`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">Loading…</p>
+      )}
+    </details>
+  );
+}
+
+const SQUISH_STATUS: Record<SquishItem["status"], string> = {
+  pending: "to do",
+  clash: "name taken, left alone",
+  done: "renamed",
+  gone: "file gone",
+  error: "failed",
+};
 
 function RecentlyReplaced() {
   const { data } = useApi<HistoryItem[]>("/api/tools/transcode/history?limit=20", swapFinished);

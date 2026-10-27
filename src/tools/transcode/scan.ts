@@ -8,12 +8,12 @@ import { errorMessage } from "../../server/integrations/http.js";
 import { splitLines } from "../../shared/settings.js";
 import { languageFromName } from "./languages.js";
 import { extractMediaInfo, type Probe } from "./media.js";
-import { evaluate, outcomeOverride, type RuleSettings } from "./rules.js";
+import { evaluate, outcomeOverride, type RuleSettings, squishOverride } from "./rules.js";
 import type { ArrMatch } from "./shared.js";
 import type { FoundFile, LibraryStore } from "./store.js";
 import { tempFileId } from "./swap.js";
 
-const VIDEO_EXTENSIONS = new Set([
+export const VIDEO_EXTENSIONS = new Set([
   ".mkv",
   ".mp4",
   ".m4v",
@@ -295,7 +295,9 @@ export async function decideAll(
       const info = row.probe ? extractMediaInfo(row.probe) : null;
       // A remembered result (not worth it, rejected, failed twice) wins over the rules.
       const evaluation =
-        outcomeOverride(row.outcome) ?? evaluate(info, match?.originalLanguage ?? null, rules);
+        outcomeOverride(row.outcome) ??
+        squishOverride(row.path, info) ??
+        evaluate(info, match?.originalLanguage ?? null, rules);
       if (evaluation.decision === "transcode") toTranscode++;
       return { id: row.id, evaluation, arr: match, probe: row.probe };
     });

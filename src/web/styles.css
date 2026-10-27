@@ -798,6 +798,30 @@ table.tracks .badge {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.squish-titles details {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+.squish-titles summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.squish-items {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+.squish-items .clash,
+.squish-items .error {
+  color: var(--warn);
+}
+.pill.outcome.squish {
+  color: var(--muted);
+}
 .pill.outcome.awaiting-approval {
   color: var(--accent);
 }

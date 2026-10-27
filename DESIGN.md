@@ -262,21 +262,26 @@ approved). Plex can't veto finishing a swap that's already part-done. Stray
 
 ### One-off tidy of `[SQUISH]` files
 
-A separate action with a dry-run list first:
+A separate action on the Transcode page, with a check (dry-run list) first:
 
-- Rename `X [SQUISH].mkv` → `X.mkv` (and matching `X [SQUISH].*.srt` sidecars)
-  when the target name is free; conflicts are listed, not touched.
-- Work one series/movie at a time: rename all its files, then ask Sonarr/Radarr
-  to rescan that series/movie, so the old and new names are seen in the same scan
-  and the episode never looks "missing" (which could trigger a re-download).
-  Then a Plex rescan of that folder. Watch history stays with the episode.
+- **Check** walks the library (skipping "never touch" folders) and lists every file
+  with ` [SQUISH]` in its name, grouped by series/movie folder. Squish tagged
+  subtitles, `.nfo`s and sample screenshots too, so all of them are included. A
+  file whose plain name is already taken (e.g. Bazarr's old `X.en.srt` next to
+  `X [SQUISH].en.srt`) is a clash: listed, never touched.
+- **Rename** one title, or all of them one title at a time: rename its files, then
+  ask Sonarr/Radarr to rescan that series/movie and Plex that folder, so the old and
+  new names are seen in the same scan and the episode never looks "missing" (Sonarr
+  only unmonitors a file that's still missing at the end of its rescan). A title
+  with a file being watched is left for later. Scans, swaps and renames take turns.
 - Bazarr's orphaned `X.*.srt` files re-attach automatically because the names
-  match again.
-- Record each file in Kondo's database as `legacy-squish`, but **don't write the
-  Kondo tag into them**: that would mean editing 5,644 files (3 TB) in place or
-  copying them all, for no gain — they're H.265 below the re-encode threshold, so
-  the decide step skips them even if the database were lost. (Squish already
-  stripped their subtitles and extra audio; that can't be undone.)
+  match again. Watch history stays with the episode.
+- Kondo moves its own record of each video to the new name (same size and time, so
+  it isn't read again) and remembers an H.265 one as **done by Squish**: it is never
+  re-encoded, even if the thresholds are lowered later. **Don't write the Kondo tag
+  into them**: that would mean editing 5,600 files (3 TB) in place for no gain.
+  A `[SQUISH]` name alone doesn't prove Squish encoded it (it renamed at least one
+  H.264 file without encoding it), so only H.265 files count.
 
 ## UI
 

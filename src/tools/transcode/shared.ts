@@ -8,6 +8,7 @@ export type ReasonCode =
   | "h265-high-bitrate"
   | "already-efficient"
   | "kondo-done"
+  | "squish-done"
   | "hdr"
   | "above-1080p"
   | "no-video"
@@ -24,6 +25,7 @@ export const REASON_LABELS: Record<ReasonCode, string> = {
   "h265-high-bitrate": "H.265 above the bitrate threshold",
   "already-efficient": "Already H.265/AV1 at a good size",
   "kondo-done": "Already done by Kondo",
+  "squish-done": "Already done by Squish",
   hdr: "HDR or Dolby Vision (not handled yet)",
   "above-1080p": "Above 1080p (not handled yet)",
   "no-video": "No video stream",
@@ -149,7 +151,8 @@ export type OutcomeStatus =
   | "not-worth-it"
   | "failed"
   | "swapping"
-  | "done";
+  | "done"
+  | "squish";
 
 export const OUTCOME_LABELS: Record<OutcomeStatus, string> = {
   "awaiting-approval": "Waiting for approval",
@@ -159,6 +162,7 @@ export const OUTCOME_LABELS: Record<OutcomeStatus, string> = {
   failed: "Failed",
   swapping: "Swapping in",
   done: "Done",
+  squish: "Done by Squish",
 };
 
 export interface VerifyReport {
@@ -252,6 +256,35 @@ export interface LibrarySummary {
 export interface FilesPage {
   total: number;
   files: FileSummary[];
+}
+
+export type SquishStatus = "pending" | "clash" | "done" | "gone" | "error";
+
+/** One series or movie folder with files still named `… [SQUISH].…`. */
+export interface SquishTitle {
+  /** Full path of the series/movie folder. */
+  key: string;
+  name: string;
+  pending: number;
+  clashes: number;
+  done: number;
+}
+
+export interface SquishItem {
+  /** Path relative to the title's folder. */
+  path: string;
+  /** The new file name. */
+  target: string;
+  status: SquishStatus;
+  error: string | null;
+}
+
+export interface SquishSummary {
+  checkedAt: string | null;
+  titles: SquishTitle[];
+  pending: number;
+  clashes: number;
+  done: number;
 }
 
 export type FileFilter = "transcode" | "skip" | "error" | "all";

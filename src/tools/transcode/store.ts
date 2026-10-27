@@ -19,6 +19,9 @@ import {
   REASON_LABELS,
   type ReasonCode,
   type ScanInfo,
+  type SquishItem,
+  type SquishStatus,
+  type SquishSummary,
 } from "./shared.js";
 
 export const migrations: Migration[] = [
@@ -96,6 +99,21 @@ export const migrations: Migration[] = [
     sql: `
       ALTER TABLE transcode_history ADD COLUMN details TEXT;
       CREATE INDEX transcode_history_by_time ON transcode_history (swapped_at);
+    `,
+  },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE transcode_squish (
+        path TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        target TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX transcode_squish_by_title ON transcode_squish (title, status);
+      CREATE TABLE transcode_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `,
   },
 ];
@@ -722,5 +740,109 @@ export class LibraryStore {
       errors: Number(row.errors),
       error: str(row.error),
     };
+  }
+
+  // [SQUISH] tidy -------------------------------------------------------------------------
+
+  /**
+   * Replaces the list of files still to rename (`status` pending or clash) with a fresh check.
+   * Files already renamed stay as a record.
+   */
+  saveSquishPlan(
+    items: { path: string; title: string; target: string; status: SquishStatus }[],
+    checkedAt: string,
+  ): void {
+    transaction(this.db, () => {
+      this.db.prepare("DELETE FROM transcode_squish WHERE status != 'done'").run();
+      const insert = this.db.prepare(
+        `INSERT OR REPLACE INTO transcode_squish (path, title, target, status, error, updated_at)
+         VALUES (?, ?, ?, ?, NULL, ?)`,
+      );
+      for (const item of items) {
+        insert.run(item.path, item.title, item.target, item.status, checkedAt);
+      }
+      this.db
+        .prepare("INSERT OR REPLACE INTO transcode_meta (key, value) VALUES ('squishCheckedAt', ?)")
+        .run(checkedAt);
+    });
+  }
+
+  squishSummary(): SquishSummary {
+    const checked = this.db
+      .prepare("SELECT value FROM transcode_meta WHERE key = 'squishCheckedAt'")
+      .get();
+    const rows = this.db
+      .prepare(
+        `SELECT title, SUM(status IN ('pending', 'error')) AS pending, SUM(status = 'clash') AS clashes,
+         SUM(status = 'done') AS done FROM transcode_squish GROUP BY title ORDER BY title`,
+      )
+      .all();
+    const titles = rows
+      .map((r) => ({
+        key: String(r.title),
+        name: String(r.title).slice(String(r.title).lastIndexOf("/") + 1),
+        pending: Number(r.pending),
+        clashes: Number(r.clashes),
+        done: Number(r.done),
+      }))
+      .filter((t) => t.pending > 0 || t.clashes > 0);
+    const total = (key: "pending" | "clashes" | "done") =>
+      rows.reduce((sum, r) => sum + Number(r[key]), 0);
+    return {
+      checkedAt: checked ? String(checked.value) : null,
+      titles,
+      pending: total("pending"),
+      clashes: total("clashes"),
+      done: total("done"),
+    };
+  }
+
+  squishItems(title: string): (SquishItem & { fullPath: string })[] {
+    return this.db
+      .prepare("SELECT * FROM transcode_squish WHERE title = ? ORDER BY path")
+      .all(title)
+      .map((r) => ({
+        fullPath: String(r.path),
+        path: String(r.path).slice(title.length + 1),
+        target: String(r.target),
+        status: String(r.status) as SquishStatus,
+        error: str(r.error),
+      }));
+  }
+
+  /** Titles with files still to rename, in order. */
+  squishTitlesToDo(): string[] {
+    return this.db
+      .prepare(
+        "SELECT DISTINCT title FROM transcode_squish WHERE status IN ('pending', 'error') ORDER BY title",
+      )
+      .all()
+      .map((r) => String(r.title));
+  }
+
+  setSquishStatus(path: string, status: SquishStatus, error: string | null = null): void {
+    this.db
+      .prepare("UPDATE transcode_squish SET status = ?, error = ?, updated_at = ? WHERE path = ?")
+      .run(status, error, new Date().toISOString(), path);
+  }
+
+  /**
+   * A video was renamed (same contents): point its row at the new name so it isn't read again,
+   * and remember Squish's H.265 output so it's never re-encoded. Returns the file's arr match.
+   */
+  renamedVideo(from: string, to: string): ArrMatch | null {
+    return transaction(this.db, () => {
+      this.db.prepare("DELETE FROM transcode_files WHERE path = ?").run(to);
+      const row = this.db
+        .prepare("SELECT id, video_codec, arr FROM transcode_files WHERE path = ?")
+        .get(from);
+      if (!row) return null;
+      const id = Number(row.id);
+      this.db.prepare("UPDATE transcode_files SET path = ? WHERE id = ?").run(to, id);
+      if (row.video_codec === "hevc" && !this.outcome(id)) {
+        this.saveOutcome(id, { status: "squish" });
+      }
+      return row.arr === null ? null : (JSON.parse(String(row.arr)) as ArrMatch);
+    });
   }
 }

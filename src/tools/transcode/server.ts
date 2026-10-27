@@ -7,7 +7,15 @@ import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
 import { type EncodePayload, type EncodeResult, runEncode, workDirFor } from "./encode.js";
 import { librarySettings, runScan } from "./scan.js";
-import type { FileDetail, FileFilter, FileSort } from "./shared.js";
+import type { ArrMatch, FileFilter, FileSort } from "./shared.js";
+import {
+  runSquishCheck,
+  runSquishRename,
+  type SquishCheckResult,
+  type SquishDeps,
+  type SquishRenamePayload,
+  type SquishRenameResult,
+} from "./squish.js";
 import { encodeKey, LibraryStore, migrations, swapKey } from "./store.js";
 import { runSwap, type SwapPayload, type SwapResult } from "./swap.js";
 
@@ -115,10 +123,10 @@ const RECENT_KEPT = 50;
 const FILTERS = new Set<FileFilter>(["transcode", "skip", "error", "all"]);
 const SORTS = new Set<FileSort>(["saving", "size", "path"]);
 
-/** Tells Plex and Sonarr/Radarr that a file was replaced. Each is best effort. */
-async function rescanAfterSwap(
+/** Tells Plex (one folder) and Sonarr/Radarr (one series/movie) to look again. Best effort. */
+async function rescan(
   integrations: Integrations,
-  file: FileDetail,
+  arr: ArrMatch | null,
   folder: string,
 ): Promise<string[]> {
   const lines: string[] = [];
@@ -134,12 +142,12 @@ async function rescanAfterSwap(
       lines.push(`Couldn't ask Plex to rescan: ${errorMessage(error)}`);
     }
   }
-  if (file.arr) {
-    const client = integrations[file.arr.app];
+  if (arr) {
+    const client = integrations[arr.app];
     if (client.configured()) {
       try {
-        await client.rescan(file.arr.id);
-        lines.push(`Asked ${client.name} to rescan ${file.arr.title}`);
+        await client.rescan(arr.id);
+        lines.push(`Asked ${client.name} to rescan ${arr.title}`);
       } catch (error) {
         lines.push(`Couldn't ask ${client.name} to rescan: ${errorMessage(error)}`);
       }
@@ -264,7 +272,7 @@ export default defineTool({
           workRoot,
           lock: libraryLock,
           isPlaying: (file) => ctx.plex.isPlaying(file),
-          rescan: (file, folder) => rescanAfterSwap(ctx.integrations, file, folder),
+          rescan: (file, folder) => rescan(ctx.integrations, file.arr, folder),
           onFinished: () => {
             // The new file is read by the next scan; a free approval slot means another encode.
             if (store.outcome(job.payload.fileId)?.status === "done") scan();
@@ -272,6 +280,30 @@ export default defineTool({
           },
         });
       },
+    });
+
+    const squishDeps = (): SquishDeps => ({
+      store,
+      settings: ctx.settings,
+      lock: libraryLock,
+      isPlaying: (file) => ctx.plex.isPlaying(file),
+      rescan: (arr, folder) => rescan(ctx.integrations, arr, folder),
+      pauseMs: 2000,
+    });
+
+    ctx.defineJob<Record<string, never>, SquishCheckResult>("squish-check", {
+      slot: "general",
+      title: () => "Look for [SQUISH] names",
+      run: (job) => runSquishCheck(job, squishDeps()),
+    });
+
+    ctx.defineJob<SquishRenamePayload, SquishRenameResult>("squish-rename", {
+      slot: "general",
+      title: (p) =>
+        p.title
+          ? `Remove [SQUISH] from ${path.basename(p.title)}`
+          : "Remove [SQUISH] from every title",
+      run: (job) => runSquishRename(job, squishDeps()),
     });
 
     ctx.defineJob<EncodePayload, EncodeResult>("encode", {
@@ -381,6 +413,32 @@ export default defineTool({
           { fileId: file.id, name: path.basename(file.path) },
           { dedupeKey: encodeKey(file.id), force: true, priority: 10 },
         );
+        return reply.code(202).send(job);
+      });
+
+      app.get("/squish", async () => store.squishSummary());
+
+      app.get<{ Querystring: { title?: string } }>("/squish/items", async (request) =>
+        store
+          .squishItems(String(request.query.title ?? ""))
+          .map(({ fullPath: _, ...item }) => item),
+      );
+
+      app.post("/squish/check", async (_request, reply) =>
+        reply
+          .code(202)
+          .send(ctx.enqueue("squish-check", {}, { dedupeKey: "transcode:squish-check" })),
+      );
+
+      // One title, or all of them (one at a time).
+      app.post<{ Body: { title?: string } }>("/squish/rename", async (request, reply) => {
+        const title = request.body?.title;
+        if (title !== undefined && !store.squishTitlesToDo().includes(title)) {
+          return reply.code(404).send({ error: "Nothing to rename there" });
+        }
+        const job = ctx.enqueue<SquishRenamePayload>("squish-rename", title ? { title } : {}, {
+          dedupeKey: `transcode:squish-rename:${title ?? "*"}`,
+        });
         return reply.code(202).send(job);
       });
 
