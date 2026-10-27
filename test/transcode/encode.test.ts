@@ -13,6 +13,7 @@ import {
   buildEncodeArgs,
   combineCrops,
   type EncodePayload,
+  isDecodeProblem,
   parseCropLine,
   runEncode,
 } from "../../src/tools/transcode/encode.js";
@@ -324,4 +325,17 @@ describe.skipIf(!hasFfmpeg)("encoding a file (needs ffmpeg with x264/x265)", () 
       expect(existsSync(path.join(workRoot, String(id)))).toBe(false);
     }
   }, 120_000);
+});
+
+describe("decode check", () => {
+  it("ignores the throwaway output's timestamp complaints, not real decoding errors", () => {
+    expect(
+      isDecodeProblem(
+        "[null @ 0x55df01fdaf80] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 1 >= 1",
+      ),
+    ).toBe(false);
+    expect(isDecodeProblem("[hevc @ 0x55] Could not find ref with POC 12")).toBe(true);
+    expect(isDecodeProblem("Error while decoding stream #0:0: Invalid data found")).toBe(true);
+    expect(isDecodeProblem("")).toBe(false);
+  });
 });

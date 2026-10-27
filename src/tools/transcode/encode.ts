@@ -261,6 +261,15 @@ export async function detectCrop(
 
 // Checking the result ----------------------------------------------------------------------
 
+/**
+ * Whether a line from the decode check says something about the file. The throwaway "null"
+ * output complains about repeated timestamps after seeking into some files ("non monotonically
+ * increasing dts"); that's about where the check landed, not the file, which decodes cleanly.
+ */
+export function isDecodeProblem(line: string): boolean {
+  return line.trim() !== "" && !line.startsWith("[null @");
+}
+
 export async function verifyOutput(
   job: JobContext<unknown>,
   tools: { ffmpeg: string; ffprobe: string },
@@ -340,7 +349,13 @@ export async function verifyOutput(
         "null",
         "-",
       ],
-      { nice: 10, timeoutMs: 120_000, onStderrLine: (line) => errors.push(line) },
+      {
+        nice: 10,
+        timeoutMs: 120_000,
+        onStderrLine: (line) => {
+          if (isDecodeProblem(line)) errors.push(line);
+        },
+      },
     );
     decodeErrors.push(...errors.slice(0, 3));
   }

@@ -805,6 +805,16 @@ function FileDetailView({ id }: { id: number }) {
       setMessage((e as Error).message);
     }
   };
+  const retry = async () => {
+    setMessage(null);
+    try {
+      await api.post(`/api/tools/transcode/files/${id}/retry`);
+      setMessage("It's offered for encoding again after the next scan.");
+      void reload();
+    } catch (e) {
+      setMessage((e as Error).message);
+    }
+  };
   if (error) return <p className="bad">{error}</p>;
   if (!file) return <p className="muted">Loading…</p>;
   const plan = file.plan;
@@ -838,6 +848,16 @@ function FileDetailView({ id }: { id: number }) {
         </p>
       )}
       {file.encoding && <p className="small">Encoding is queued or running (see Recent work).</p>}
+      {file.outcome &&
+        !file.encoding &&
+        ["failed", "rejected", "not-worth-it"].includes(file.outcome.status) && (
+          <div className="form-actions">
+            <button type="button" className="small" onClick={() => void retry()}>
+              Try again
+            </button>
+            {message && <span className="muted small">{message}</span>}
+          </div>
+        )}
       {file.decision === "transcode" &&
         !file.encoding &&
         (!file.outcome || file.outcome.status === "failed") && (
