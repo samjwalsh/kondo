@@ -76,8 +76,18 @@ export const transcodeSettings: SettingsSection = {
       options: [
         { value: "off", label: "Off: only show what Kondo would do" },
         { value: "approval", label: "On: encode, then wait for my approval" },
+        { value: "auto", label: "Automatic: encode and swap in results that pass every check" },
       ],
-      help: "Encodes run in the night window (and idle mode). Results wait in Kondo's own folder; the library isn't touched.",
+      help: "Encodes run in the night window (and idle mode). With approval, results wait in Kondo's own folder until you approve them. Automatic also approves anything already waiting.",
+    },
+    {
+      key: "maxSwapsPerDay",
+      label: "In automatic mode, swap in at most this many a day",
+      type: "number",
+      default: 0,
+      min: 0,
+      max: 1000,
+      help: "0 means no limit. Over the limit, results wait for approval until the next day.",
     },
     {
       key: "maxWaiting",
@@ -98,6 +108,9 @@ export const transcodeSettings: SettingsSection = {
     },
   ],
 };
+
+/** How many recent swaps keep their comparison frames. */
+const RECENT_KEPT = 50;
 
 const FILTERS = new Set<FileFilter>(["transcode", "skip", "error", "all"]);
 const SORTS = new Set<FileSort>(["saving", "size", "path"]);
@@ -166,10 +179,30 @@ export default defineTool({
       }
     };
 
+    /** In automatic mode, approves results that passed, within the daily limit. */
+    const autoApprove = () => {
+      const v = ctx.settings.values("transcode");
+      if (v.mode !== "auto") return;
+      const limit = Number(v.maxSwapsPerDay);
+      let room =
+        limit > 0
+          ? limit -
+            store.swappedSince(new Date(Date.now() - 86_400_000).toISOString()) -
+            store.countOutcomes(["approved", "swapping"])
+          : Number.POSITIVE_INFINITY;
+      for (const id of store.cleanAwaitingApproval()) {
+        if (room <= 0) break;
+        store.setOutcomeStatus(id, "approved", null);
+        room--;
+      }
+      queueSwaps();
+    };
+
     /** Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. */
     const feed = () => {
+      autoApprove();
       const v = ctx.settings.values("transcode");
-      if (v.mode !== "approval") return;
+      if (v.mode !== "approval" && v.mode !== "auto") return;
       let free =
         Number(v.maxWaiting) -
         store.countOutcomes(["awaiting-approval", "approved", "swapping"]) -
@@ -185,9 +218,13 @@ export default defineTool({
       }
     };
 
-    /** Removes work folders that no result or running encode needs any more. */
+    /**
+     * Removes work folders that no result or running encode needs any more. The frames of the
+     * latest swaps are kept for "Recently replaced".
+     */
     const sweep = async () => {
       const keep = store.idsWithResults();
+      for (const item of store.history(RECENT_KEPT)) keep.add(item.fileId);
       for (const name of await readdir(workRoot).catch(() => [] as string[])) {
         const id = Number(name);
         if (!Number.isInteger(id) || keep.has(id) || store.detail(id)?.encoding) continue;
@@ -348,6 +385,10 @@ export default defineTool({
       });
 
       app.get("/approvals", async () => store.approvals());
+
+      app.get<{ Querystring: { limit?: string } }>("/history", async (request) =>
+        store.history(Math.min(Math.max(Number(request.query.limit) || 20, 1), RECENT_KEPT)),
+      );
 
       app.post<{ Params: { id: string } }>("/approvals/:id/approve", async (request, reply) => {
         const id = Number(request.params.id);

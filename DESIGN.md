@@ -316,7 +316,13 @@ Sonarr/Radarr webhooks call the VM directly on the LAN with a shared secret.
 | M4 | Swap + recovery | Approved files swapped safely; power-cut recovery tested; Squish's cron removed |
 | M5 | CPU slot | Both encoders running; quality calibrated side by side |
 | M6 | `[SQUISH]` tidy | Dry run reviewed, renames done in batches |
-| M7 | Automatic mode | Approval switched off once trusted |
+| M7 | Automatic mode | Approval switched off once trusted (built straight after M4) |
+
+Automatic mode approves every result that passes its checks (same length, the
+planned tracks, decodes cleanly, at least the minimum saving), optionally at most N
+swaps per rolling 24 hours. A result sent back after a failed swap still waits for a
+person. The latest 50 swaps keep their comparison frames under "Recently replaced"
+for spot checks after the fact.
 
 Later, if wanted: torrent tool; RX 5700 XT encoder; VM upgrade.
 

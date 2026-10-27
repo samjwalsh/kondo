@@ -777,6 +777,27 @@ table.tracks .badge {
   border-radius: 6px;
   border: 1px solid var(--border);
 }
+.history {
+  padding: 4px 18px;
+}
+.history details {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+}
+.history details:first-child {
+  border-top: 0;
+}
+.history summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  cursor: pointer;
+}
+.history-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .pill.outcome.awaiting-approval {
   color: var(--accent);
 }

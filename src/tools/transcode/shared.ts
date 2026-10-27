@@ -196,6 +196,18 @@ export interface Outcome {
   updatedAt: string;
 }
 
+/** A file swapped into the library. */
+export interface HistoryItem {
+  fileId: number;
+  /** Full path of the new file. */
+  path: string;
+  sourceBytes: number;
+  outputBytes: number;
+  encoder: string | null;
+  swappedAt: string;
+  details: EncodeDetails | null;
+}
+
 export interface ApprovalItem {
   file: FileSummary;
   outcome: Outcome;

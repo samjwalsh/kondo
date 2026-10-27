@@ -259,8 +259,10 @@ async function finish(
     mtimeMs: now.mtimeMs,
     sourceBytes,
     encoder: file.outcome?.encoder ?? null,
+    details: file.outcome?.details ?? null,
   });
-  await rm(workDirFor(deps.workRoot, fileId), { recursive: true, force: true });
+  // The comparison frames stay a while for "Recently replaced"; the old work folders are swept.
+  await rm(path.join(workDirFor(deps.workRoot, fileId), "output.mkv"), { force: true });
   job.log(
     `Swapped in: ${formatBytes(sourceBytes)} → ${formatBytes(now.size)}, ${formatBytes(sourceBytes - now.size)} saved`,
   );

@@ -12,6 +12,7 @@ import {
   type FileSort,
   type FileSummary,
   type FilesPage,
+  type HistoryItem,
   type LibrarySummary,
   type Outcome,
   type OutcomeStatus,
@@ -88,6 +89,13 @@ export const migrations: Migration[] = [
         encoder TEXT,
         swapped_at TEXT NOT NULL
       );
+    `,
+  },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE transcode_history ADD COLUMN details TEXT;
+      CREATE INDEX transcode_history_by_time ON transcode_history (swapped_at);
     `,
   },
 ];
@@ -508,6 +516,7 @@ export class LibraryStore {
       mtimeMs: number;
       sourceBytes: number;
       encoder: string | null;
+      details: EncodeDetails | null;
     },
   ): void {
     const now = new Date().toISOString();
@@ -531,11 +540,53 @@ export class LibraryStore {
         .run(done.path, done.size, Math.round(done.mtimeMs), fileId);
       this.db
         .prepare(
-          `INSERT INTO transcode_history (file_id, path, source_bytes, output_bytes, encoder, swapped_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO transcode_history (file_id, path, source_bytes, output_bytes, encoder, swapped_at, details)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(fileId, done.path, done.sourceBytes, done.size, done.encoder, now);
+        .run(
+          fileId,
+          done.path,
+          done.sourceBytes,
+          done.size,
+          done.encoder,
+          now,
+          done.details ? JSON.stringify(done.details) : null,
+        );
     });
+  }
+
+  /** Files swapped in, newest first. */
+  history(limit: number): HistoryItem[] {
+    return this.db
+      .prepare("SELECT * FROM transcode_history ORDER BY id DESC LIMIT ?")
+      .all(limit)
+      .map((r) => ({
+        fileId: Number(r.file_id),
+        path: String(r.path),
+        sourceBytes: Number(r.source_bytes),
+        outputBytes: Number(r.output_bytes),
+        encoder: str(r.encoder),
+        swappedAt: String(r.swapped_at),
+        details: r.details === null ? null : (JSON.parse(String(r.details)) as EncodeDetails),
+      }));
+  }
+
+  /** How many files were swapped in since `since` (an ISO time). */
+  swappedSince(since: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM transcode_history WHERE swapped_at >= ?")
+      .get(since);
+    return Number(row?.n ?? 0);
+  }
+
+  /** Results waiting for approval that passed cleanly (not ones sent back after a failed swap). */
+  cleanAwaitingApproval(): number[] {
+    return this.db
+      .prepare(
+        "SELECT file_id FROM transcode_outcomes WHERE status = 'awaiting-approval' AND error IS NULL ORDER BY updated_at",
+      )
+      .all()
+      .map((r) => Number(r.file_id));
   }
 
   doneTotals(): { count: number; savedBytes: number } {

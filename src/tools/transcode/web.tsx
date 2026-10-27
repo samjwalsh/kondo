@@ -10,6 +10,7 @@ import {
   type FileSort,
   type FileSummary,
   type FilesPage,
+  type HistoryItem,
   type LibrarySummary,
   OUTCOME_LABELS,
   type PlannedTrack,
@@ -55,11 +56,13 @@ export function TranscodePage() {
         </button>
       </div>
       <p className="muted">
-        Encoded results wait here for your approval. Nothing in the library is changed yet.
+        Encoded results replace the originals once approved: by you, or automatically if Settings →
+        Transcode says so.
       </p>
 
       {error && <p className="bad">{error}</p>}
       <Approvals />
+      <RecentlyReplaced />
       {summary && <Summary summary={summary} onPick={pick} />}
 
       <h2>Recent work</h2>
@@ -104,14 +107,85 @@ function Approvals() {
 const clock = (seconds: number) =>
   `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 
+/** Original and Kondo's frame side by side, at each saved time. */
+function Frames({ fileId, times }: { fileId: number; times: number[] }) {
+  const frame = (kind: "source" | "output", i: number) =>
+    `/api/tools/transcode/work/${fileId}/frame-${kind}-${i}.jpg`;
+  return (
+    <div className="frames">
+      {times.map((at, i) => (
+        <figure key={at}>
+          <div className="pair">
+            <a href={frame("source", i)} target="_blank" rel="noreferrer">
+              <img src={frame("source", i)} alt={`Original at ${clock(at)}`} loading="lazy" />
+            </a>
+            <a href={frame("output", i)} target="_blank" rel="noreferrer">
+              <img
+                src={frame("output", i)}
+                alt={`Kondo's version at ${clock(at)}`}
+                loading="lazy"
+              />
+            </a>
+          </div>
+          <figcaption className="muted small">
+            Original (left) and Kondo (right) at {clock(at)}
+          </figcaption>
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+const swapFinished = (event: {
+  type: string;
+  job?: { tool: string; type: string; state: string };
+}) =>
+  event.type === "job.updated" &&
+  event.job?.tool === "transcode" &&
+  event.job.type === "swap" &&
+  event.job.state === "succeeded";
+
+function RecentlyReplaced() {
+  const { data } = useApi<HistoryItem[]>("/api/tools/transcode/history?limit=20", swapFinished);
+  if (!data || data.length === 0) return null;
+  return (
+    <section>
+      <h2>Recently replaced</h2>
+      <div className="card history">
+        {data.map((item) => {
+          const parts = item.path.split("/");
+          const name = parts.pop() ?? item.path;
+          return (
+            <details key={`${item.fileId}-${item.swappedAt}`}>
+              <summary>
+                <span className="history-name">
+                  <strong>{name}</strong>
+                  <span className="muted small"> {parts.slice(-2).join("/")}</span>
+                </span>
+                <span className="small">
+                  {bytes(item.sourceBytes)} → {bytes(item.outputBytes)}{" "}
+                  <span className="muted">· {ago(item.swappedAt)}</span>
+                </span>
+              </summary>
+              {item.details && item.details.frames.length > 0 ? (
+                <Frames fileId={item.fileId} times={item.details.frames} />
+              ) : (
+                <p className="muted small">No comparison frames kept for this one.</p>
+              )}
+            </details>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const d = item.outcome.details;
   const name = item.file.path.split("/").pop() ?? item.file.path;
-  const frame = (kind: "source" | "output", i: number) =>
-    `/api/tools/transcode/work/${item.file.id}/frame-${kind}-${i}.jpg`;
 
   const act = async (action: "approve" | "reject") => {
     setBusy(true);
@@ -170,27 +244,7 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
               Stream).
             </span>
           </p>
-          <div className="frames">
-            {d.frames.map((at, i) => (
-              <figure key={at}>
-                <div className="pair">
-                  <a href={frame("source", i)} target="_blank" rel="noreferrer">
-                    <img src={frame("source", i)} alt={`Original at ${clock(at)}`} loading="lazy" />
-                  </a>
-                  <a href={frame("output", i)} target="_blank" rel="noreferrer">
-                    <img
-                      src={frame("output", i)}
-                      alt={`Kondo's version at ${clock(at)}`}
-                      loading="lazy"
-                    />
-                  </a>
-                </div>
-                <figcaption className="muted small">
-                  Original (left) and Kondo (right) at {clock(at)}
-                </figcaption>
-              </figure>
-            ))}
-          </div>
+          <Frames fileId={item.file.id} times={d.frames} />
         </>
       )}
       {item.outcome.status === "swapping" ? (

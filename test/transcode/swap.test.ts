@@ -113,9 +113,13 @@ describe("swapping a result into the library", () => {
     expect(readFileSync(torrent, "utf8")).toBe(ORIGINAL);
     expect(statSync(t.source).mode & 0o777).toBe(statSync(torrent).mode & 0o777);
     expect(readdirSync(t.folder)).toEqual(["Show - S01E01.mkv"]);
-    expect(existsSync(t.workDir)).toBe(false);
+    // The result is gone from the work folder; its frames stay for "Recently replaced".
+    expect(existsSync(t.output)).toBe(false);
     expect(t.store.outcome(t.id)?.status).toBe("done");
     expect(t.rescans).toEqual([t.folder]);
+    expect(t.store.history(10)).toMatchObject([
+      { fileId: t.id, path: t.source, sourceBytes: ORIGINAL.length, outputBytes: RESULT.length },
+    ]);
 
     // The row follows the new file, so the next scan reads it afresh instead of forgetting it.
     expect(t.store.sourceState(t.id)?.size).toBe(RESULT.length);
