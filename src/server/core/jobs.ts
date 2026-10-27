@@ -503,7 +503,7 @@ export class JobQueue {
     this.db
       .prepare(
         `UPDATE jobs SET state = ?, result = ?, error = ?, finished_at = ?, updated_at = ?,
-         progress = CASE WHEN ? = 'succeeded' THEN 1 ELSE progress END WHERE id = ?`,
+         progress = CASE WHEN ? = 'succeeded' THEN 1 ELSE progress END, progress_text = NULL WHERE id = ?`,
       )
       .run(
         state,
