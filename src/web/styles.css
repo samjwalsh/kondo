@@ -712,3 +712,56 @@ table.tracks .badge {
 .file-detail p {
   overflow-wrap: anywhere;
 }
+
+/* Approvals ------------------------------------------------------------------- */
+
+.approvals {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+.approval {
+  min-width: 0;
+}
+.approval-head {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.approval-size {
+  font-size: 1.1rem;
+  margin: 8px 0 2px;
+}
+.frames {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+.frames figure {
+  margin: 0;
+}
+.frames .pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.frames img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.pill.outcome.awaiting-approval {
+  color: var(--accent);
+}
+.pill.outcome.approved {
+  color: var(--good);
+}
+.pill.outcome.failed {
+  color: var(--bad);
+}
+.pill.outcome.rejected,
+.pill.outcome.not-worth-it {
+  color: var(--warn);
+}

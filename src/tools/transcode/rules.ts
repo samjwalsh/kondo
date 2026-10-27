@@ -6,6 +6,7 @@ import type {
   AudioInfo,
   Decision,
   MediaInfo,
+  Outcome,
   Plan,
   PlannedTrack,
   ReasonCode,
@@ -162,12 +163,32 @@ interface AudioOutput {
   to: string | null;
   kbps: number;
   reason: string | null;
+  /** Output channels when converting. */
+  channels: 1 | 2 | 6;
+}
+
+/** What the encoder does with a kept audio track: copy it, or E-AC3 at these settings. */
+export function audioTarget(
+  a: AudioInfo,
+): { copy: true } | { copy: false; channels: 1 | 2 | 6; kbps: number } {
+  const out = audioOutput(a);
+  return out.to === null ? { copy: true } : { copy: false, channels: out.channels, kbps: out.kbps };
+}
+
+/** Subtitle formats Matroska can't hold, converted to SRT. */
+export function subtitleNeedsSrt(codec: string): boolean {
+  return CONVERT_SUBS.has(codec);
 }
 
 /** Copy small lossy formats; convert everything else to E-AC3. */
 function audioOutput(a: AudioInfo): AudioOutput {
   if (COPY_AUDIO.has(a.codec))
-    return { to: null, kbps: a.kbps ?? assumedAudioKbps(a.codec, a.channels), reason: null };
+    return {
+      to: null,
+      kbps: a.kbps ?? assumedAudioKbps(a.codec, a.channels),
+      reason: null,
+      channels: 2,
+    };
   const lossless =
     a.codec === "truehd" ||
     a.codec === "flac" ||
@@ -181,10 +202,10 @@ function audioOutput(a: AudioInfo): AudioOutput {
       : "Not a format Kondo keeps as-is";
   if (a.channels > 2) {
     const downmix = a.channels > 6 ? ` (from ${channelsName(a.channels)})` : "";
-    return { to: `E-AC3 5.1${downmix} · 640 kb/s`, kbps: 640, reason };
+    return { to: `E-AC3 5.1${downmix} · 640 kb/s`, kbps: 640, reason, channels: 6 };
   }
-  if (a.channels === 1) return { to: "E-AC3 mono · 128 kb/s", kbps: 128, reason };
-  return { to: "E-AC3 stereo · 224 kb/s", kbps: 224, reason };
+  if (a.channels === 1) return { to: "E-AC3 mono · 128 kb/s", kbps: 128, reason, channels: 1 };
+  return { to: "E-AC3 stereo · 224 kb/s", kbps: 224, reason, channels: 2 };
 }
 
 export function planTracks(info: MediaInfo, originalLanguage: string | null): Plan {
@@ -490,4 +511,36 @@ export function evaluate(
     };
   }
   return { decision: "transcode", reasonCode, reason, plan };
+}
+
+/** A remembered encode result that changes the decision (so the file isn't tried again). */
+export function outcomeOverride(
+  outcome: Pick<Outcome, "status" | "error" | "attempts"> | null,
+): Evaluation | null {
+  if (!outcome) return null;
+  if (outcome.status === "not-worth-it") {
+    return {
+      decision: "skip",
+      reasonCode: "not-worth-it",
+      reason: outcome.error ?? "Tried, but the result wasn't small enough",
+      plan: null,
+    };
+  }
+  if (outcome.status === "rejected") {
+    return {
+      decision: "skip",
+      reasonCode: "rejected",
+      reason: outcome.error ?? "You rejected the result",
+      plan: null,
+    };
+  }
+  if (outcome.status === "failed" && outcome.attempts >= 2) {
+    return {
+      decision: "error",
+      reasonCode: "encode-failed",
+      reason: `Encoding failed twice: ${outcome.error ?? "unknown error"}`,
+      plan: null,
+    };
+  }
+  return null;
 }

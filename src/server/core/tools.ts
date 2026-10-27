@@ -21,6 +21,10 @@ export interface Integrations {
 /** Everything the core offers a tool. */
 export interface ToolContext {
   readonly toolId: string;
+  /** A folder of the tool's own on Kondo's disk (created on start-up). */
+  readonly dataDir: string;
+  /** The running Kondo version. */
+  readonly version: string;
   readonly db: Db;
   readonly settings: SettingsStore;
   readonly events: EventBus;
@@ -31,6 +35,8 @@ export interface ToolContext {
   defineJob<P, R>(type: string, def: JobType<P, R>): void;
   enqueue<P>(type: string, payload: P, options?: EnqueueOptions): Job;
   listJobs(limit?: number): Job[];
+  /** How many of this tool's jobs of `type` are queued, running or paused. */
+  activeJobs(type: string): number;
   addHealthCheck(def: HealthCheckDef): void;
   /** Routes are mounted under /api/tools/<toolId>. */
   routes(register: (app: FastifyInstance) => void | Promise<void>): void;
