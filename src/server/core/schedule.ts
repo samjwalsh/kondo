@@ -62,7 +62,7 @@ export const encodingSettings: SettingsSection = {
       min: 0,
       max: 40,
       step: 0.5,
-      help: "Lower is better quality and bigger. 0 means not calibrated yet, so the CPU slot stays unused: run the calibration on the Transcode page to find the value that matches the GPU's quality.",
+      help: "Lower is better quality and bigger. 25 matched the GPU's quality on this library with files about 28% smaller. 0 leaves the CPU slot unused.",
     },
     {
       key: "cpuPreset",
@@ -74,7 +74,7 @@ export const encodingSettings: SettingsSection = {
         { value: "medium", label: "Medium" },
         { value: "slow", label: "Slow: smaller files, about half the speed" },
       ],
-      help: "Calibrate again after changing this.",
+      help: "The CRF was matched at Medium; a different speed changes what it gives.",
     },
     {
       key: "cpuThreads",

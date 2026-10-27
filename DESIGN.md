@@ -186,7 +186,10 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
   with NVENC CQ 32 and with x265 at CRF 22/25/28/31, and measures each against the
   original with SSIM. It recommends the highest CRF (in half steps, rounded down)
   whose average SSIM still matches NVENC's, and reports the size difference and
-  speed there. The CPU slot stays unused until a CRF is set.
+  speed there. The CPU slot stays unused until a CRF is set. Result on this
+  library (Oct 2026, medium preset): CRF 25, files 28 % smaller than NVENC's, about
+  2× real time. The job has no page of its own (it's a one-off); it can be run
+  again with `POST /api/tools/transcode/calibration`.
 - Each encoder has at most one file queued, so files go to whichever frees up
   first; when both are free the CPU gets the biggest saving.
 - **Re-encode thresholds** for files that are already H.265/AV1 (video bitrate):
