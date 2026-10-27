@@ -1,4 +1,4 @@
-// The short morning message on Telegram: what happened since the last one.
+// The transcode lines of the morning Telegram summary.
 
 import type { LogEntry } from "./shared.js";
 
@@ -8,7 +8,7 @@ function size(bytes: number): string {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** A few lines; also sent after a quiet night, as a sign that Kondo is running. */
+/** The transcode lines of the morning summary; also there after a quiet night. */
 export function morningSummary(
   entries: LogEntry[],
   state: {
@@ -18,7 +18,7 @@ export function morningSummary(
     /** Why nothing would have been encoded, if there's an obvious reason. */
     idleBecause?: string | null;
   },
-): string {
+): string[] {
   const count = (kind: LogEntry["kind"]) => entries.filter((e) => e.kind === kind).length;
   const replaced = entries.filter((e) => e.kind === "replaced");
   const saved = replaced.reduce((sum, e) => sum + (e.sourceBytes ?? 0) - (e.outputBytes ?? 0), 0);
@@ -42,5 +42,5 @@ export function morningSummary(
   const left = [`${state.toTranscode.toLocaleString("en-GB")} left to transcode`];
   if (state.awaitingApproval > 0) left.push(`${state.awaitingApproval} waiting for your approval`);
   lines.push(`${left.join(" · ")}.`);
-  return lines.join("\n");
+  return lines;
 }

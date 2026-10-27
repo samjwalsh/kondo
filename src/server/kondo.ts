@@ -14,11 +14,13 @@ import { JobQueue, type SlotConfig } from "./core/jobs.js";
 import { Alerts, Heartbeat } from "./core/notify.js";
 import { encodingSettings, Scheduler, scheduleSettings } from "./core/schedule.js";
 import { SettingsStore } from "./core/settings.js";
+import { MorningSummary } from "./core/summary.js";
 import type { Integrations, ToolContext, ToolDefinition } from "./core/tools.js";
 import { ArrClient, arrSettings } from "./integrations/arr.js";
 import { errorMessage } from "./integrations/http.js";
 import { Kuma, kumaSettings } from "./integrations/kuma.js";
 import { PlexClient, PlexMonitor, plexSettings } from "./integrations/plex.js";
+import { QbittorrentClient, qbittorrentSettings } from "./integrations/qbittorrent.js";
 import { Telegram, telegramSettings } from "./integrations/telegram.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerHealthRoutes } from "./routes/health.js";
@@ -74,6 +76,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
     plexSettings,
     arrSettings("sonarr"),
     arrSettings("radarr"),
+    qbittorrentSettings,
     telegramSettings,
     kumaSettings,
   ]) {
@@ -84,6 +87,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
     plex: new PlexClient(settings),
     sonarr: new ArrClient("sonarr", settings),
     radarr: new ArrClient("radarr", settings),
+    qbittorrent: new QbittorrentClient(settings),
     telegram: new Telegram(settings),
   };
   const kuma = new Kuma(settings);
@@ -109,6 +113,20 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
   health.onEvaluated((summary) => alerts.onHealth(summary));
 
   const repeating = new RepeatingTasks(app.log);
+  const summary = new MorningSummary({
+    db,
+    settings,
+    scheduler,
+    telegram: integrations.telegram,
+    log: app.log,
+  });
+  repeating.add(
+    () => 60_000,
+    async () => {
+      await summary.tick();
+    },
+    60_000,
+  );
   const cards = new Map<string, () => ToolCard | Promise<ToolCard>>();
   for (const tool of tools) {
     await registerTool(tool, {
@@ -125,6 +143,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
       health,
       repeating,
       cards,
+      summary,
     });
   }
 
@@ -144,6 +163,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
       plex: () => integrations.plex.test(),
       sonarr: () => integrations.sonarr.test(),
       radarr: () => integrations.radarr.test(),
+      qbittorrent: () => integrations.qbittorrent.test(),
       telegram: () => integrations.telegram.test(),
       kuma: () => kuma.test(),
     },
@@ -194,6 +214,7 @@ interface ToolDeps {
   health: Health;
   repeating: RepeatingTasks;
   cards: Map<string, () => ToolCard | Promise<ToolCard>>;
+  summary: MorningSummary;
 }
 
 /** Timers tools ask for with ctx.every(); only run while Kondo runs in the background. */
@@ -269,6 +290,7 @@ async function registerTool(tool: ToolDefinition, deps: ToolDeps): Promise<void>
     routes: (register) => routes.push(register),
     every: (intervalMs, task, firstAfterMs) => deps.repeating.add(intervalMs, task, firstAfterMs),
     setCard: (card) => deps.cards.set(tool.id, card),
+    addSummary: (lines) => deps.summary.add(tool.id, lines),
   };
   await tool.register(ctx);
   if (routes.length > 0) {
@@ -339,6 +361,20 @@ function registerCoreChecks(d: CoreCheckDeps): void {
       },
     });
   }
+
+  d.health.register({
+    id: "qbittorrent",
+    label: "qBittorrent",
+    check: async () => {
+      const qb = d.integrations.qbittorrent;
+      if (!qb.configured()) return { status: "warn", message: "Not set up yet" };
+      try {
+        return { status: "ok", message: `Connected (${await qb.version()})` };
+      } catch (error) {
+        return { status: "error", message: `Can't reach qBittorrent: ${errorMessage(error)}` };
+      }
+    },
+  });
 
   d.health.register({
     id: "telegram",

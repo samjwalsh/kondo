@@ -293,6 +293,27 @@ A separate action on the Transcode page, with a check (dry-run list) first:
   A `[SQUISH]` name alone doesn't prove Squish encoded it (it renamed at least one
   H.264 file without encoding it), so only H.265 files count.
 
+## Downloads tool (fake releases)
+
+Fake releases on public trackers carry a program (`Episode.exe`, often with decoy videos in
+a `vis/` folder) instead of the video. Sonarr/Radarr refuse to import them ("potentially
+dangerous file") but don't mark them failed, so they never search again; the fake keeps
+seeding and the episode stays missing.
+
+Every 10 minutes the Downloads tool lists qBittorrent's torrents in the `sonarr`/`radarr`
+categories and reads each one's file list (including files qBittorrent skips). A torrent
+with a blocked file type (`exe scr com bat cmd msi lnk vbs`) is a fake. In **remove** mode
+it finds the grab in Sonarr/Radarr's history by torrent hash, marks it failed (blocklist +
+"Redownload Failed" search), and only then deletes the torrent and its files; if
+Sonarr/Radarr can't be told, the torrent is left for the next check. **Report-only** mode
+lists them without changing anything. Works whether or not the download is still in the
+Sonarr/Radarr queue. Results go to the Downloads page, the dashboard card and the morning
+summary (now a core feature that every tool adds lines to).
+
+Prevention outside Kondo: qBittorrent's excluded file names (same extensions) and a
+120-minute torrent delay profile in Sonarr, so RSS doesn't grab the first (often fake)
+release.
+
 ## UI
 
 - **Dashboard**: one card per tool (health, what's running, next window, warnings).

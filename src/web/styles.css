@@ -820,6 +820,15 @@ table.tracks .badge {
 .log-detail {
   margin: 2px 0 0;
 }
+.pill.fake.removed {
+  color: var(--good);
+}
+.pill.fake.found {
+  color: var(--warn);
+}
+.pill.fake.error {
+  color: var(--bad);
+}
 .pill.log.replaced {
   color: var(--good);
 }

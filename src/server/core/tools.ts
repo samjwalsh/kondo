@@ -3,6 +3,7 @@ import type { Job, ToolCard } from "../../shared/api.js";
 import type { SettingsSection } from "../../shared/settings.js";
 import type { ArrClient } from "../integrations/arr.js";
 import type { PlexClient, PlexMonitor } from "../integrations/plex.js";
+import type { QbittorrentClient } from "../integrations/qbittorrent.js";
 import type { Telegram } from "../integrations/telegram.js";
 import type { Db, Migration } from "./db.js";
 import type { EventBus } from "./events.js";
@@ -10,11 +11,13 @@ import type { HealthCheckDef } from "./health.js";
 import type { EnqueueOptions, JobType } from "./jobs.js";
 import type { Scheduler } from "./schedule.js";
 import type { SettingsStore } from "./settings.js";
+import type { SummarySection } from "./summary.js";
 
 export interface Integrations {
   plex: PlexClient;
   sonarr: ArrClient;
   radarr: ArrClient;
+  qbittorrent: QbittorrentClient;
   telegram: Telegram;
 }
 
@@ -47,6 +50,8 @@ export interface ToolContext {
   every(intervalMs: () => number, task: () => void | Promise<void>, firstAfterMs?: number): void;
   /** The dashboard summary, built from the tool's own state. */
   setCard(card: () => ToolCard | Promise<ToolCard>): void;
+  /** Lines for the morning Telegram summary: what the tool did since `since`. */
+  addSummary(lines: SummarySection): void;
 }
 
 export interface ToolDefinition {

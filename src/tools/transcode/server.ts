@@ -91,13 +91,6 @@ export const transcodeSettings: SettingsSection = {
       help: "Encodes run in the night window (and idle mode). With approval, results wait in Kondo's own folder until you approve them. Automatic also approves anything already waiting.",
     },
     {
-      key: "morningSummary",
-      label: "Send a short summary on Telegram when the night window ends",
-      type: "boolean",
-      default: true,
-      help: "A few lines: files replaced, space saved, anything that failed. Also sent after a quiet night, so you know Kondo is running.",
-    },
-    {
       key: "maxSwapsPerDay",
       label: "In automatic mode, swap in at most this many a day",
       type: "number",
@@ -164,25 +157,6 @@ async function rescan(
   }
   return lines;
 }
-
-const localDate = (now: Date, timeZone: string) =>
-  new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-const localClock = (now: Date, timeZone: string) =>
-  new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(now);
-const minutesOfDay = (clock: string) => {
-  const [h = 0, m = 0] = clock.split(":").map(Number);
-  return h * 60 + m;
-};
 
 function terabytes(bytes: number): string {
   return bytes >= 1e12 ? `${(bytes / 1e12).toFixed(1)} TB` : `${Math.round(bytes / 1e9)} GB`;
@@ -373,28 +347,15 @@ export default defineTool({
       },
     });
 
-    /** Once a day, when the night window ends, sends what happened since the last summary. */
-    const sendMorningSummary = async () => {
-      const telegram = ctx.integrations.telegram;
-      if (!ctx.settings.values("transcode").morningSummary || !telegram.configured()) return;
-      const info = ctx.scheduler.info();
-      const now = new Date();
-      const today = localDate(now, info.timeZone);
-      const sinceEnd = minutesOfDay(localClock(now, info.timeZone)) - minutesOfDay(info.windowEnd);
-      if (sinceEnd < 0 || store.meta<string>("summaryDate") === today) return;
-      store.setMeta("summaryDate", today);
-      // Kondo wasn't running at the time: skip today's rather than send it hours late.
-      if (sinceEnd > 120) return;
-      const since =
-        store.meta<string>("summarySince") ?? new Date(now.getTime() - 86_400_000).toISOString();
-      store.setMeta("summarySince", now.toISOString());
+    // Its lines in the morning summary: files replaced, problems, what's left.
+    ctx.addSummary((since) => {
       const s = store.summary(librarySettings(ctx.settings).roots);
       const mode = ctx.settings.values("transcode").mode;
-      const text = morningSummary(store.logEntries({ since, limit: 100_000 }), {
+      return morningSummary(store.logEntries({ since, limit: 100_000 }), {
         savedSoFar: s.done.savedBytes,
         toTranscode: s.toTranscode.count,
         awaitingApproval: s.awaitingApproval,
-        idleBecause: info.paused
+        idleBecause: ctx.scheduler.info().paused
           ? "paused"
           : mode === "off"
             ? "encoding is switched off"
@@ -402,13 +363,7 @@ export default defineTool({
               ? "nothing left to do"
               : null,
       });
-      try {
-        await telegram.send(text);
-      } catch (error) {
-        ctx.log.warn({ err: errorMessage(error) }, "couldn't send the morning summary");
-      }
-    };
-    ctx.every(() => 60_000, sendMorningSummary, 60_000);
+    });
 
     ctx.every(
       () => 5 * 60_000,
