@@ -632,14 +632,14 @@ export class LibraryStore {
   }
 
   /** Files to transcode with a known video bitrate, lowest first (calibration samples). */
-  transcodeCandidatesByBitrate(): { id: number; height: number; kbps: number }[] {
+  transcodeCandidatesByBitrate(): { id: number; width: number; kbps: number }[] {
     return this.db
       .prepare(
-        `SELECT id, height, video_kbps FROM transcode_files
-         WHERE decision = 'transcode' AND video_kbps IS NOT NULL AND height IS NOT NULL ORDER BY video_kbps`,
+        `SELECT id, width, video_kbps FROM transcode_files
+         WHERE decision = 'transcode' AND video_kbps IS NOT NULL AND width IS NOT NULL ORDER BY video_kbps`,
       )
       .all()
-      .map((r) => ({ id: Number(r.id), height: Number(r.height), kbps: Number(r.video_kbps) }));
+      .map((r) => ({ id: Number(r.id), width: Number(r.width), kbps: Number(r.video_kbps) }));
   }
 
   meta<T>(key: string): T | null {

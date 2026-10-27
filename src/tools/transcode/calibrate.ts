@@ -22,12 +22,17 @@ export interface CalibrateDeps {
   crfs?: number[];
 }
 
+/** By width, so a widescreen film with its black bars cropped still counts as 1080p. */
+export function sizeClass(width: number): "1080p" | "720p" | "SD" {
+  return width >= 1600 ? "1080p" : width >= 1100 ? "720p" : "SD";
+}
+
 /**
- * Typical files to test on: a high-bitrate and a typical 1080p, a 720p and an SD one, from the
- * files still to transcode (at least 3 minutes long).
+ * Typical files to test on: a high, typical and low bitrate 1080p, a 720p and an SD one, from
+ * the files still to transcode (at least 3 minutes long).
  */
 export function pickSamples(
-  candidates: { id: number; height: number; kbps: number }[],
+  candidates: { id: number; width: number; kbps: number }[],
   durationOf: (id: number) => number,
 ): number[] {
   const longEnough = candidates.filter((c) => durationOf(c.id) >= 180);
@@ -35,10 +40,16 @@ export function pickSamples(
     list.length === 0
       ? null
       : (list[Math.min(list.length - 1, Math.floor(list.length * fraction))] ?? null);
-  const fullHd = longEnough.filter((c) => c.height >= 900);
-  const hd = longEnough.filter((c) => c.height >= 600 && c.height < 900);
-  const sd = longEnough.filter((c) => c.height < 600);
-  const picks = [near(fullHd, 0.9), near(fullHd, 0.5), near(hd, 0.5), near(sd, 0.5)];
+  const fullHd = longEnough.filter((c) => sizeClass(c.width) === "1080p");
+  const hd = longEnough.filter((c) => sizeClass(c.width) === "720p");
+  const sd = longEnough.filter((c) => sizeClass(c.width) === "SD");
+  const picks = [
+    near(fullHd, 0.9),
+    near(fullHd, 0.5),
+    near(fullHd, 0.1),
+    near(hd, 0.5),
+    near(sd, 0.5),
+  ];
   return [...new Set(picks.filter((p) => p !== null).map((p) => p.id))];
 }
 
@@ -243,11 +254,10 @@ export async function runCalibration(
       const gpu = await measure("gpu", 0, "GPU (NVENC CQ 32)");
       const cpu: CalibrationSample["cpu"] = [];
       for (const crf of crfs) cpu.push({ crf, ...(await measure("cpu", crf, `CPU CRF ${crf}`)) });
-      const height = video.height;
       samples.push({
         fileId: id,
         name,
-        label: `${height >= 900 ? "1080p" : height >= 600 ? "720p" : "SD"}, ${((file.videoKbps ?? 0) / 1000).toFixed(1)} Mb/s`,
+        label: `${sizeClass(video.width)}, ${((file.videoKbps ?? 0) / 1000).toFixed(1)} Mb/s`,
         clipStartS: start,
         clipSeconds,
         gpu,

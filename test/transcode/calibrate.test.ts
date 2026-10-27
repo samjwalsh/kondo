@@ -59,16 +59,19 @@ describe("CPU calibration", () => {
     expect(parseSsim(["nothing here"])).toBeNull();
   });
 
-  it("tests on a high-bitrate and a typical 1080p, a 720p and an SD file, at least 3 minutes long", () => {
+  it("tests on high, typical and low bitrate 1080p, a 720p and an SD file, at least 3 minutes long", () => {
     const files = [
-      ...Array.from({ length: 10 }, (_, i) => ({ id: i + 1, height: 1080, kbps: 1000 * (i + 1) })),
-      { id: 20, height: 720, kbps: 3000 },
-      { id: 30, height: 480, kbps: 1500 },
-      { id: 31, height: 480, kbps: 1600 },
+      ...Array.from({ length: 9 }, (_, i) => ({ id: i + 1, width: 1920, kbps: 1000 * (i + 1) })),
+      // A cropped widescreen film is still 1080p.
+      { id: 10, width: 1920, kbps: 10_000 },
+      { id: 20, width: 1280, kbps: 3000 },
+      { id: 30, width: 720, kbps: 1500 },
+      { id: 31, width: 720, kbps: 1600 },
     ];
     const durations: Record<number, number> = { 10: 60 }; // too short
     const picked = pickSamples(files, (id) => durations[id] ?? 1500);
-    // 1080p by bitrate, 90th percentile (9 Mb/s, since the 10 Mb/s one is too short) and median.
-    expect(picked).toEqual([9, 5, 20, 31]);
+    // 1080p by bitrate: 90th percentile (9 Mb/s, since the 10 Mb/s one is too short), median
+    // and 10th percentile; then the 720p and the median SD.
+    expect(picked).toEqual([9, 5, 1, 20, 31]);
   });
 });
