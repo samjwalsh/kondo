@@ -312,7 +312,11 @@ function registerCoreChecks(d: CoreCheckDeps): void {
           message: "Not set up yet. Encoding waits until Kondo can see who's watching.",
         };
       }
-      if (!a.reachable) return { status: "error", message: `Can't reach Plex: ${a.error}` };
+      // Right after start-up the first check hasn't answered yet; that isn't a failure.
+      if (!a.checkedAt) return { status: "ok", message: "Checking…" };
+      if (!a.reachable) {
+        return { status: "error", message: `Can't reach Plex: ${a.error ?? "no answer"}` };
+      }
       const n = a.sessions.length;
       return {
         status: "ok",
