@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
+import type { SettingsResponse } from "../../shared/settings.js";
 import { api } from "../../web/api.js";
 import { Card, JobList } from "../../web/components.js";
 import { ago, bytes, count, duration } from "../../web/format.js";
 import { useApi } from "../../web/live.js";
 import {
   type ApprovalItem,
+  type Calibration,
   type FileDetail,
   type FileFilter,
   type FileSort,
@@ -71,6 +73,7 @@ export function TranscodePage() {
       <h2>Recent work</h2>
       <JobList tool="transcode" limit={5} empty="Nothing yet." />
 
+      <CpuCalibration />
       <SquishTidy />
 
       <h2>Files</h2>
@@ -150,6 +153,141 @@ const swapFinished = (event: {
   event.job.type === "swap" &&
   event.job.state === "succeeded";
 
+const calibrationChanged = (event: {
+  type: string;
+  job?: { tool: string; type: string; state: string };
+}) =>
+  (event.type === "job.updated" &&
+    event.job?.tool === "transcode" &&
+    event.job.type === "calibrate") ||
+  event.type === "settings.changed";
+
+const mbps = (kbps: number) => `${(kbps / 1000).toFixed(2)} Mb/s`;
+
+/** The CPU encoder's quality setting, matched to the GPU's by measuring both. */
+function CpuCalibration() {
+  const { data } = useApi<{ result: Calibration | null; running: boolean }>(
+    "/api/tools/transcode/calibration",
+    calibrationChanged,
+  );
+  const { data: settings } = useApi<SettingsResponse>("/api/settings", calibrationChanged);
+  const [error, setError] = useState<string | null>(null);
+  if (!data || !settings) return null;
+  const encoding = settings.values.encoding ?? {};
+  const crf = Number(encoding.cpuCrf ?? 0);
+  const r = data.result;
+
+  const act = async (run: () => Promise<unknown>) => {
+    setError(null);
+    try {
+      await run();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <section>
+      <h2>CPU encoder</h2>
+      <div className="card calibration">
+        <p>
+          The CPU (x265) makes smaller files than the GPU at the same quality, but its quality
+          setting has to be matched to the GPU's first. Calibration encodes a minute of a few
+          typical files both ways and compares each with the original. It takes about half an hour,
+          starts now, and pauses while anyone is watching Plex.
+        </p>
+        <p>
+          Now:{" "}
+          {crf > 0 ? (
+            <strong>
+              CRF {crf}, {String(encoding.cpuPreset)} preset
+            </strong>
+          ) : (
+            <strong>not calibrated, so the CPU slot isn't used</strong>
+          )}
+          {encoding.cpuEnabled === false && <span className="muted"> (CPU slot switched off)</span>}
+        </p>
+        {r && (
+          <>
+            <div className="table-scroll">
+              <table className="calibration-table small">
+                <thead>
+                  <tr>
+                    <th>Clip</th>
+                    <th>GPU</th>
+                    {r.crfs.map((c) => (
+                      <th key={c}>CRF {c}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {r.samples.map((s) => (
+                    <tr key={s.fileId}>
+                      <td>
+                        {s.name}
+                        <div className="muted">{s.label}</div>
+                      </td>
+                      <td>
+                        {mbps(s.gpu.kbps)}
+                        <div className="muted">{s.gpu.ssimDb} dB</div>
+                      </td>
+                      {s.cpu.map((c) => (
+                        <td key={c.crf}>
+                          {mbps(c.kbps)}
+                          <div className="muted">
+                            {c.ssimDb} dB · {c.speed}×
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="muted small">
+              Video bitrate, and closeness to the original (SSIM; higher is closer). Speed is a
+              multiple of real time. {r.preset} preset, measured {ago(r.finishedAt)}.
+            </p>
+            {r.recommendedCrf !== null ? (
+              <p>
+                <strong>CRF {r.recommendedCrf}</strong> matches the GPU's quality ({r.gpuSsimDb} dB)
+                with files{" "}
+                <strong className="good">
+                  {Math.abs(r.sizeVsGpuPercent ?? 0)}%{" "}
+                  {(r.sizeVsGpuPercent ?? 0) <= 0 ? "smaller" : "bigger"}
+                </strong>
+                , at about {r.cpuSpeed}× real time.
+              </p>
+            ) : null}
+            {r.note && <p className="warn">{r.note}</p>}
+          </>
+        )}
+        <div className="form-actions">
+          {r?.recommendedCrf != null && r.recommendedCrf !== crf && (
+            <button
+              type="button"
+              className="primary"
+              onClick={() =>
+                void act(() => api.put("/api/settings/encoding", { cpuCrf: r.recommendedCrf }))
+              }
+            >
+              Use CRF {r.recommendedCrf}
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={data.running}
+            onClick={() => void act(() => api.post("/api/tools/transcode/calibration"))}
+          >
+            {data.running ? "Calibrating…" : r ? "Calibrate again" : "Calibrate"}
+          </button>
+          {error && <span className="bad">{error}</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const squishJobChanged = (event: {
   type: string;
   job?: { tool: string; type: string; state: string };
@@ -163,7 +301,8 @@ function SquishTidy() {
   const { data: s } = useApi<SquishSummary>("/api/tools/transcode/squish", squishJobChanged);
   const [error, setError] = useState<string | null>(null);
   if (!s) return null;
-  if (s.checkedAt && s.pending === 0 && s.clashes === 0) return null;
+  // All done: nothing more to show (a few clashes may remain, listed for the record).
+  if (s.checkedAt && s.pending === 0) return null;
 
   const post = async (url: string, body?: unknown) => {
     setError(null);

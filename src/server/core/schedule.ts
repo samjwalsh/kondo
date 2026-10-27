@@ -55,6 +55,28 @@ export const encodingSettings: SettingsSection = {
     { key: "gpuEnabled", label: "Use the GPU slot", type: "boolean", default: true },
     { key: "cpuEnabled", label: "Use the CPU slot", type: "boolean", default: true },
     {
+      key: "cpuCrf",
+      label: "CPU quality (x265 CRF)",
+      type: "number",
+      default: 0,
+      min: 0,
+      max: 40,
+      step: 0.5,
+      help: "Lower is better quality and bigger. 0 means not calibrated yet, so the CPU slot stays unused: run the calibration on the Transcode page to find the value that matches the GPU's quality.",
+    },
+    {
+      key: "cpuPreset",
+      label: "CPU speed (x265 preset)",
+      type: "select",
+      default: "medium",
+      options: [
+        { value: "fast", label: "Fast" },
+        { value: "medium", label: "Medium" },
+        { value: "slow", label: "Slow: smaller files, about half the speed" },
+      ],
+      help: "Calibrate again after changing this.",
+    },
+    {
       key: "cpuThreads",
       label: "CPU threads for encoding",
       type: "number",

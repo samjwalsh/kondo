@@ -180,8 +180,14 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
   quality 32, high-quality preset, look-ahead, crop detection). First approval-mode
   files are compared against `[SQUISH]` output of similar episodes.
 - **CPU slot** (x265) is calibrated to the *same visual quality*, not the same
-  number: on a few sample files, pick the x265 CRF whose SSIM against the source
-  matches what NVENC CQ 32 achieves, then compare sizes.
+  number. The calibration job takes a 60 s clip (at 40 %) from four typical files
+  still to transcode (a high-bitrate and a median 1080p, a 720p, an SD), encodes it
+  with NVENC CQ 32 and with x265 at CRF 22/25/28/31, and measures each against the
+  original with SSIM. It recommends the highest CRF (in half steps, rounded down)
+  whose average SSIM still matches NVENC's, and reports the size difference and
+  speed there. The CPU slot stays unused until a CRF is set.
+- Each encoder has at most one file queued, so files go to whichever frees up
+  first; when both are free the CPU gets the biggest saving.
 - **Re-encode thresholds** for files that are already H.265/AV1 (video bitrate):
 
   | Resolution | Re-encode above | Why |

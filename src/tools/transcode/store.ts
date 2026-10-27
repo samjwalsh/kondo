@@ -631,6 +631,38 @@ export class LibraryStore {
       }));
   }
 
+  /** Files to transcode with a known video bitrate, lowest first (calibration samples). */
+  transcodeCandidatesByBitrate(): { id: number; height: number; kbps: number }[] {
+    return this.db
+      .prepare(
+        `SELECT id, height, video_kbps FROM transcode_files
+         WHERE decision = 'transcode' AND video_kbps IS NOT NULL AND height IS NOT NULL ORDER BY video_kbps`,
+      )
+      .all()
+      .map((r) => ({ id: Number(r.id), height: Number(r.height), kbps: Number(r.video_kbps) }));
+  }
+
+  meta<T>(key: string): T | null {
+    const row = this.db.prepare("SELECT value FROM transcode_meta WHERE key = ?").get(key);
+    return row ? (JSON.parse(String(row.value)) as T) : null;
+  }
+
+  setMeta(key: string, value: unknown): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO transcode_meta (key, value) VALUES (?, ?)")
+      .run(key, JSON.stringify(value));
+  }
+
+  /** Encode jobs waiting for a slot to free up. */
+  queuedEncodes(slot: "gpu" | "cpu"): number {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM jobs WHERE dedupe_key LIKE 'transcode:encode:%' AND state = 'queued' AND slot = ?",
+      )
+      .get(slot);
+    return Number(row?.n ?? 0);
+  }
+
   /** A swap job for this file is queued or running. */
   swapActive(fileId: number): boolean {
     const row = this.db

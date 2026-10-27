@@ -5,9 +5,10 @@ import { sendFile } from "../../server/core/sendFile.js";
 import { defineTool, type Integrations } from "../../server/core/tools.js";
 import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
+import { CALIBRATION_KEY, runCalibration } from "./calibrate.js";
 import { type EncodePayload, type EncodeResult, runEncode, workDirFor } from "./encode.js";
 import { librarySettings, runScan } from "./scan.js";
-import type { ArrMatch, FileFilter, FileSort } from "./shared.js";
+import type { ArrMatch, Calibration, FileFilter, FileSort } from "./shared.js";
 import {
   runSquishCheck,
   runSquishRename,
@@ -206,20 +207,31 @@ export default defineTool({
       queueSwaps();
     };
 
-    /** Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. */
+    /**
+     * Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. Each
+     * encoder gets one file queued at a time, so files go to whichever encoder frees up first;
+     * the CPU (better compression) is offered the biggest saving.
+     */
     const feed = () => {
       autoApprove();
       const v = ctx.settings.values("transcode");
       if (v.mode !== "approval" && v.mode !== "auto") return;
+      const encoding = ctx.settings.values("encoding");
+      const encoders: ("gpu" | "cpu")[] = [];
+      if (encoding.cpuEnabled && Number(encoding.cpuCrf) > 0) encoders.push("cpu");
+      if (encoding.gpuEnabled) encoders.push("gpu");
       let free =
         Number(v.maxWaiting) -
         store.countOutcomes(["awaiting-approval", "approved", "swapping"]) -
         ctx.activeJobs("encode");
-      if (free <= 0) return;
-      for (const file of store.nextCandidates(free)) {
+      for (const encoder of encoders) {
+        if (free <= 0) return;
+        if (store.queuedEncodes(encoder) > 0) continue;
+        const file = store.nextCandidates(1)[0];
+        if (!file) return;
         ctx.enqueue<EncodePayload>(
           "encode",
-          { fileId: file.id, name: path.basename(file.path) },
+          { fileId: file.id, name: path.basename(file.path), encoder },
           { dedupeKey: encodeKey(file.id) },
         );
         free--;
@@ -306,16 +318,26 @@ export default defineTool({
       run: (job) => runSquishRename(job, squishDeps()),
     });
 
+    ctx.defineJob<Record<string, never>, Calibration>("calibrate", {
+      slot: "cpu",
+      title: () => "Calibrate the CPU encoder",
+      run: (job) =>
+        runCalibration(job, {
+          store,
+          settings: ctx.settings,
+          workDir: path.join(ctx.dataDir, "calibration"),
+        }),
+    });
+
     ctx.defineJob<EncodePayload, EncodeResult>("encode", {
-      slot: "gpu",
-      title: (p) => `Transcode ${p.name}`,
+      slot: (p) => p.encoder ?? "gpu",
+      title: (p) => `Transcode ${p.name}${p.encoder === "cpu" ? " (CPU)" : ""}`,
       run: (job) =>
         runEncode(job, {
           store,
           settings: ctx.settings,
           workRoot,
           version: ctx.version,
-          encoder: "gpu",
           onFinished: feed,
         }),
       // Interrupted by a restart: throw away the partial result; it's encoded again.
@@ -347,6 +369,8 @@ export default defineTool({
         scan();
         feed();
       }
+      // An encoder switched on, or the CPU calibrated.
+      if (event.type === "settings.changed" && event.scope === "encoding") feed();
     });
 
     ctx.addHealthCheck({
@@ -415,6 +439,18 @@ export default defineTool({
         );
         return reply.code(202).send(job);
       });
+
+      app.get("/calibration", async () => ({
+        result: store.meta<Calibration>(CALIBRATION_KEY),
+        running: ctx.activeJobs("calibrate") > 0,
+      }));
+
+      // Runs now (outside the night window), still giving way to Plex.
+      app.post("/calibration", async (_request, reply) =>
+        reply
+          .code(202)
+          .send(ctx.enqueue("calibrate", {}, { dedupeKey: "transcode:calibrate", force: true })),
+      );
 
       app.get("/squish", async () => store.squishSummary());
 

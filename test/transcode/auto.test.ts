@@ -55,3 +55,40 @@ describe("automatic mode", () => {
     expect(ids.every((id) => store.outcome(id)?.status === "awaiting-approval")).toBe(true);
   });
 });
+
+describe("feeding the encoders", () => {
+  async function kondoWithCandidates(sizes: number[]) {
+    const k = await createKondo(testConfig(), { background: false, tools: [transcode] });
+    await k.start();
+    started.push(k);
+    const store = new LibraryStore(k.db);
+    store.reconcile(
+      new Map(sizes.map((size, i) => [`/tv/Show/E${i}.mkv`, { root: "/tv", size, mtimeMs: 1 }])),
+      new Date().toISOString(),
+      true,
+    );
+    k.db.prepare("UPDATE transcode_files SET decision = 'transcode', est_bytes = size / 5").run();
+    const queued = () =>
+      k.db
+        .prepare("SELECT slot, payload FROM jobs WHERE type = 'encode' ORDER BY id")
+        .all()
+        .map((r) => [String(r.slot), JSON.parse(String(r.payload)).name]);
+    return { k, queued };
+  }
+
+  it("leaves the CPU unused until it's calibrated, one file queued per encoder", async () => {
+    const { k, queued } = await kondoWithCandidates([3000, 1000, 2000]);
+    k.settings.update("transcode", { mode: "approval" });
+    expect(queued()).toEqual([["gpu", "E0.mkv"]]);
+  });
+
+  it("offers the CPU the biggest saving, then the GPU the next", async () => {
+    const { k, queued } = await kondoWithCandidates([3000, 1000, 2000]);
+    k.settings.update("encoding", { cpuCrf: 27 });
+    k.settings.update("transcode", { mode: "approval" });
+    expect(queued()).toEqual([
+      ["cpu", "E0.mkv"],
+      ["gpu", "E2.mkv"],
+    ]);
+  });
+});

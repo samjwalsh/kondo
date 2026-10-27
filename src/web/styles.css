@@ -66,6 +66,9 @@ h2 {
 .bad {
   color: var(--bad);
 }
+.warn {
+  color: var(--warn);
+}
 .tight {
   margin: 4px 0;
 }
@@ -797,6 +800,25 @@ table.tracks .badge {
 .history-name {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.calibration-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+}
+.calibration-table th,
+.calibration-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+.calibration-table td:first-child {
+  overflow-wrap: anywhere;
+  min-width: 160px;
 }
 .squish-titles details {
   border-top: 1px solid var(--border);

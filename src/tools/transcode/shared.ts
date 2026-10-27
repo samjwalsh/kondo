@@ -289,3 +289,40 @@ export interface SquishSummary {
 
 export type FileFilter = "transcode" | "skip" | "error" | "all";
 export type FileSort = "saving" | "size" | "path";
+
+/** One clip encoded both ways, compared against the original. */
+export interface CalibrationSample {
+  fileId: number;
+  name: string;
+  /** e.g. "1080p, 8.2 Mb/s" */
+  label: string;
+  clipStartS: number;
+  clipSeconds: number;
+  gpu: CalibrationPoint;
+  cpu: (CalibrationPoint & { crf: number })[];
+}
+
+export interface CalibrationPoint {
+  /** SSIM against the original, in dB (higher is closer). */
+  ssimDb: number;
+  /** Video bitrate of the result. */
+  kbps: number;
+  /** Encoding speed as a multiple of real time. */
+  speed: number;
+}
+
+export interface Calibration {
+  finishedAt: string;
+  preset: string;
+  crfs: number[];
+  samples: CalibrationSample[];
+  /** Average SSIM of the GPU's results. */
+  gpuSsimDb: number;
+  /** The highest CRF whose average SSIM still matches the GPU's, or null if none tested did. */
+  recommendedCrf: number | null;
+  /** How the CPU's files compare in size at that CRF, e.g. -28 for 28% smaller. */
+  sizeVsGpuPercent: number | null;
+  /** Average CPU speed at the recommended CRF. */
+  cpuSpeed: number | null;
+  note: string | null;
+}
