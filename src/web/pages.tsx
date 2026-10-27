@@ -43,17 +43,18 @@ export function Dashboard() {
         {status.schedule.paused && <PauseButton paused />}
       </div>
 
-      <div className="grid">
-        <Card
-          title="Encoders"
-          className="wide"
-          actions={!status.schedule.paused && <PauseButton paused={false} />}
-        >
-          {encoders.map((slot) => (
-            <SlotView key={slot.id} slot={slot} />
-          ))}
-        </Card>
+      <Card
+        title="Encoders"
+        className="encoders"
+        actions={!status.schedule.paused && <PauseButton paused={false} />}
+      >
+        {encoders.map((slot) => (
+          <SlotView key={slot.id} slot={slot} />
+        ))}
+      </Card>
 
+      {/* Columns that fill top to bottom, so a tall card doesn't leave gaps beside it. */}
+      <div className="columns">
         <Card title="Plex">
           <PlexView status={status} />
         </Card>
@@ -79,14 +80,6 @@ export function Dashboard() {
           </dl>
         </Card>
 
-        <Card title="Health">
-          <ul className="checks">
-            {status.health.checks.map((check) => (
-              <CheckRow key={check.id} check={check} />
-            ))}
-          </ul>
-        </Card>
-
         {status.tools.map((tool) => (
           <Card
             key={tool.id}
@@ -104,6 +97,14 @@ export function Dashboard() {
             ))}
           </Card>
         ))}
+
+        <Card title="Health">
+          <ul className="checks">
+            {status.health.checks.map((check) => (
+              <CheckRow key={check.id} check={check} />
+            ))}
+          </ul>
+        </Card>
       </div>
     </>
   );

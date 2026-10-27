@@ -416,8 +416,16 @@ input[aria-invalid="true"] {
 .slot-job > span {
   overflow-wrap: anywhere;
 }
-.card.wide {
-  grid-column: 1 / -1;
+.card.encoders {
+  margin-bottom: 16px;
+}
+.columns {
+  columns: 320px;
+  column-gap: 16px;
+}
+.columns > .card {
+  break-inside: avoid;
+  margin-bottom: 16px;
 }
 .pause-toggle {
   margin-left: auto;
