@@ -155,6 +155,33 @@ Foreign film with no English subtitles: fine, transcode anyway.
 
 Known trade-off: Atmos inside TrueHD is lost when converting to E-AC3.
 
+### Removing other-language audio (remux)
+
+Files Kondo doesn't re-encode keep whatever audio they came with. A Nov 2026 audit found ~32
+with English plus a dub, almost always the dub as the default track (so Plex plays it):
+mostly Squish output, plus "MULTi" releases that arrived already in H.265. These get a
+**remux**: the video and every kept track are copied as they are, the other-language audio is
+left out, and English (or the original language) becomes the default.
+
+A file is remuxed when all of these hold:
+
+1. Kondo isn't re-encoding it: it's skipped as already efficient, done by Squish, a small
+   saving, or tried and not worth it. (Not rejected, not HDR, not above 1080p, not Kondo's own.)
+2. Its original language is known from Sonarr/Radarr, so an anime's Japanese track is never
+   mistaken for a dub.
+3. It has audio in another language: not English, not the original, not unlabelled
+   (commentary, audio description and duplicates don't count).
+4. An English, original-language or unlabelled track stays. A file with **nothing but a dub**
+   is left alone: removing tracks can't bring English back. (The same audit found ~65 such
+   files, where Squish kept only the first track of a MULTi release; they need a new download.)
+
+Subtitles and attachments follow the normal rules in the same pass, but don't trigger a remux
+on their own. A remux runs through the same encode → verify → approve → swap steps as a
+transcode, in the general slot (it only copies, about a minute a file), one at a time and
+counted against the approval cap. It skips crop detection, comparison frames and the
+minimum-saving check; verify expects the source's video codec. The result carries the Kondo
+tag, so it's never looked at again.
+
 ### Encoders and slots
 
 | Slot | Encoder | Why | Limits |

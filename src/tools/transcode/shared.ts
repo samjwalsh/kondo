@@ -1,11 +1,13 @@
 // Types shared by the transcode tool's server code and its web page.
 
-export type Decision = "transcode" | "skip" | "error";
+/** `remux`: the video stays as it is; only other-language audio tracks are removed. */
+export type Decision = "transcode" | "remux" | "skip" | "error";
 
 export type ReasonCode =
   | "h264"
   | "old-codec"
   | "h265-high-bitrate"
+  | "foreign-audio"
   | "already-efficient"
   | "kondo-done"
   | "squish-done"
@@ -23,6 +25,7 @@ export const REASON_LABELS: Record<ReasonCode, string> = {
   h264: "H.264 → H.265",
   "old-codec": "Older codec → H.265",
   "h265-high-bitrate": "H.265 above the bitrate threshold",
+  "foreign-audio": "Other-language audio to remove",
   "already-efficient": "Already H.265/AV1 at a good size",
   "kondo-done": "Already done by Kondo",
   "squish-done": "Already done by Squish",
@@ -243,6 +246,8 @@ export interface LibrarySummary {
   files: number;
   bytes: number;
   toTranscode: { count: number; bytes: number; estimatedBytes: number };
+  /** Files whose other-language audio is to be removed (video untouched). */
+  toRemux: { count: number; bytes: number };
   skipped: { count: number; bytes: number };
   problems: number;
   notYetRead: number;
@@ -287,7 +292,7 @@ export interface SquishSummary {
   done: number;
 }
 
-export type FileFilter = "transcode" | "skip" | "error" | "all";
+export type FileFilter = "transcode" | "remux" | "skip" | "error" | "all";
 export type FileSort = "saving" | "size" | "path";
 
 /** One clip encoded both ways, compared against the original. */

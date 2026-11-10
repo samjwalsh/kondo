@@ -208,7 +208,26 @@ function audioOutput(a: AudioInfo): AudioOutput {
   return { to: "E-AC3 stereo · 224 kb/s", kbps: 224, reason, channels: 2 };
 }
 
-export function planTracks(info: MediaInfo, originalLanguage: string | null): Plan {
+export interface PlanOptions {
+  /** Tracks only: the video and every kept audio track are copied as they are. */
+  remux?: boolean;
+}
+
+export function planTracks(
+  info: MediaInfo,
+  originalLanguage: string | null,
+  options: PlanOptions = {},
+): Plan {
+  const remux = options.remux === true;
+  const audioOut = (a: AudioInfo): AudioOutput =>
+    remux
+      ? {
+          to: null,
+          kbps: a.kbps ?? assumedAudioKbps(a.codec, a.channels),
+          reason: null,
+          channels: 2,
+        }
+      : audioOutput(a);
   const tracks: PlannedTrack[] = [];
   const notes: string[] = [];
   const original = originalLanguage && originalLanguage !== "eng" ? originalLanguage : null;
@@ -262,7 +281,7 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
   for (const a of info.audio) {
     const summary = describeAudio(a);
     if (keep.includes(a)) {
-      const out = audioOutput(a);
+      const out = audioOut(a);
       audioKbps += out.kbps;
       const setLanguage =
         a.language === null && labelAs
@@ -395,21 +414,41 @@ export function planTracks(info: MediaInfo, originalLanguage: string | null): Pl
     );
   }
 
-  const estimatedBytes = Math.round(
-    (((targetVideoKbps + audioKbps + subtitleKbps) * 1000) / 8) * info.durationS * 1.01,
-  );
+  const estimatedBytes = remux
+    ? remuxedBytes(info, tracks)
+    : Math.round(
+        (((targetVideoKbps + audioKbps + subtitleKbps) * 1000) / 8) * info.durationS * 1.01,
+      );
+  const videoFrom = video
+    ? `${videoName(video.codec)} ${video.width}×${video.height}${video.bitDepth > 8 ? ` ${video.bitDepth}-bit` : ""}${video.kbps !== null ? ` · ${mbps(video.kbps)}${video.kbpsEstimated ? " (estimated)" : ""}` : ""}`
+    : "No video";
+  if (remux)
+    return { video: { from: videoFrom, to: "Copied as it is" }, tracks, notes, estimatedBytes };
 
   return {
     video: {
-      from: video
-        ? `${videoName(video.codec)} ${video.width}×${video.height}${video.bitDepth > 8 ? ` ${video.bitDepth}-bit` : ""}${video.kbps !== null ? ` · ${mbps(video.kbps)}${video.kbpsEstimated ? " (estimated)" : ""}` : ""}`
-        : "No video",
+      from: videoFrom,
       to: `H.265 ${video && video.bitDepth > 8 ? "10-bit" : "8-bit"} · ≈${mbps(targetVideoKbps)}`,
     },
     tracks,
     notes,
     estimatedBytes,
   };
+}
+
+/** The file's size less the tracks a remux drops (only their bitrate is known, not their bytes). */
+function remuxedBytes(info: MediaInfo, tracks: PlannedTrack[]): number {
+  let droppedKbps = 0;
+  for (const t of tracks) {
+    if (t.action !== "drop") continue;
+    if (t.kind === "audio") {
+      const a = info.audio.find((x) => x.index === t.index);
+      if (a) droppedKbps += a.kbps ?? assumedAudioKbps(a.codec, a.channels);
+    } else if (t.kind === "subtitle") {
+      droppedKbps += info.subtitles.find((x) => x.index === t.index)?.kbps ?? 0;
+    }
+  }
+  return Math.max(0, Math.round(info.sizeBytes - ((droppedKbps * 1000) / 8) * info.durationS));
 }
 
 export interface Evaluation {
@@ -561,4 +600,49 @@ export function squishOverride(file: string, info: MediaInfo | null): Evaluation
   const name = file.slice(file.lastIndexOf("/") + 1);
   if (!name.includes(" [SQUISH]") || info?.video?.codec !== "hevc") return null;
   return outcomeOverride({ status: "squish", error: null, attempts: 0 });
+}
+
+/** Skipped files whose tracks may still need tidying: their video stays as it is. */
+const REMUXABLE = new Set<ReasonCode>([
+  "already-efficient",
+  "small-saving",
+  "squish-done",
+  "not-worth-it",
+]);
+
+/**
+ * A file Kondo won't re-encode, but whose audio has other-language tracks the track rules drop
+ * (often the default one, so Plex plays the dub): copy it without them. Only when the original
+ * language is known from Sonarr/Radarr, and only when an English or original-language track
+ * stays; a file with nothing but a dub is left alone, since dropping tracks can't fix it.
+ */
+export function remuxOverride(
+  evaluation: Evaluation,
+  info: MediaInfo | null,
+  originalLanguage: string | null,
+): Evaluation | null {
+  if (evaluation.decision !== "skip" || !REMUXABLE.has(evaluation.reasonCode)) return null;
+  const video = info?.video;
+  if (!info || !video || info.kondoTag || !originalLanguage) return null;
+  if (video.hdr !== "none" || resolutionOf(video.width, video.height) === "above-1080p")
+    return null;
+  const usable = info.audio.filter((a) => !a.commentary && !a.descriptive);
+  const wanted = (a: AudioInfo) =>
+    a.language === null || a.language === "eng" || a.language === originalLanguage;
+  const foreign = usable.filter((a) => !wanted(a));
+  if (foreign.length === 0 || !usable.some(wanted)) return null;
+
+  const plan = planTracks(info, originalLanguage, { remux: true });
+  const names = [...new Set(foreign.map((a) => languageName(a.language)))];
+  const kept = [...new Set(usable.filter(wanted).map((a) => languageName(a.language)))];
+  const sourceDefault = info.audio.find((a) => a.isDefault) ?? info.audio[0];
+  const list = (xs: string[]) =>
+    xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : (xs[0] ?? "");
+  const defaultNote = sourceDefault && foreign.includes(sourceDefault) ? " (it's the default)" : "";
+  return {
+    decision: "remux",
+    reasonCode: "foreign-audio",
+    reason: `${list(names)} audio${defaultNote} to remove; ${list(kept)} kept`,
+    plan,
+  };
 }

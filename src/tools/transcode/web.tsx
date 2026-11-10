@@ -25,6 +25,7 @@ const PAGE = 50;
 
 const FILTERS: { id: FileFilter; label: string }[] = [
   { id: "transcode", label: "To transcode" },
+  { id: "remux", label: "Audio to tidy" },
   { id: "skip", label: "Skipped" },
   { id: "error", label: "Couldn't read" },
   { id: "all", label: "All" },
@@ -419,6 +420,7 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
   const [error, setError] = useState<string | null>(null);
   const d = item.outcome.details;
   const name = item.file.path.split("/").pop() ?? item.file.path;
+  const remux = item.file.decision === "remux";
 
   const act = async (action: "approve" | "reject") => {
     setBusy(true);
@@ -441,10 +443,17 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
       </header>
       {d && (
         <>
-          <p className="approval-size">
-            {bytes(d.sourceBytes)} → <strong>{bytes(d.outputBytes)}</strong>{" "}
-            <span className="good">{d.savingPercent}% smaller</span>
-          </p>
+          {remux ? (
+            <p className="approval-size">
+              Other-language audio removed · {bytes(d.sourceBytes)} →{" "}
+              <strong>{bytes(d.outputBytes)}</strong>
+            </p>
+          ) : (
+            <p className="approval-size">
+              {bytes(d.sourceBytes)} → <strong>{bytes(d.outputBytes)}</strong>{" "}
+              <span className="good">{d.savingPercent}% smaller</span>
+            </p>
+          )}
           <p className="muted small">
             {d.encoder}
             {d.averageFps !== null && ` · ${d.averageFps} fps`} · took{" "}
@@ -477,7 +486,7 @@ function ApprovalCard({ item, onChanged }: { item: ApprovalItem; onChanged: () =
               Stream).
             </span>
           </p>
-          <Frames fileId={item.file.id} times={d.frames} />
+          {d.frames.length > 0 && <Frames fileId={item.file.id} times={d.frames} />}
         </>
       )}
       {item.outcome.status === "swapping" ? (
@@ -527,7 +536,7 @@ function Summary({
   }
   const saving = s.toTranscode.bytes - s.toTranscode.estimatedBytes;
   const skipped = s.byReason.filter(
-    (r) => !["h264", "old-codec", "h265-high-bitrate"].includes(r.code),
+    (r) => !["h264", "old-codec", "h265-high-bitrate", "foreign-audio"].includes(r.code),
   );
   return (
     <>
@@ -549,6 +558,13 @@ function Summary({
           <strong className="good">{bytes(Math.max(0, saving))}</strong>
           <span className="muted">once their torrents are gone too</span>
         </div>
+        {s.toRemux.count > 0 && (
+          <button type="button" className="tile" onClick={() => onPick("remux")}>
+            <span className="tile-label">Other-language audio</span>
+            <strong>{count(s.toRemux.count)}</strong>
+            <span className="muted">to remove; the video stays as it is</span>
+          </button>
+        )}
         {s.done.count > 0 && (
           <div className="tile">
             <span className="tile-label">Done</span>
@@ -762,9 +778,10 @@ function FileRow({
       <span className="muted small">{videoLabel(file)}</span>
       <span className="file-size">
         {bytes(file.sizeBytes)}
-        {file.decision === "transcode" && file.estimatedBytes !== null && (
-          <span className="good"> → {bytes(file.estimatedBytes)}</span>
-        )}
+        {(file.decision === "transcode" || file.decision === "remux") &&
+          file.estimatedBytes !== null && (
+            <span className="good"> → {bytes(file.estimatedBytes)}</span>
+          )}
       </span>
       <span className="muted small file-reason">
         {file.outcomeStatus && (
@@ -799,7 +816,11 @@ function FileDetailView({ id }: { id: number }) {
     setMessage(null);
     try {
       await api.post(`/api/tools/transcode/files/${id}/encode`);
-      setMessage("Queued. It starts straight away unless Plex needs the GPU.");
+      setMessage(
+        file?.decision === "remux"
+          ? "Queued. It starts straight away."
+          : "Queued. It starts straight away unless Plex needs the GPU.",
+      );
       void reload();
     } catch (e) {
       setMessage((e as Error).message);
@@ -834,9 +855,11 @@ function FileDetailView({ id }: { id: number }) {
         <strong>
           {file.decision === "transcode"
             ? "Would transcode"
-            : file.decision === "skip"
-              ? "Skipped"
-              : "Problem"}
+            : file.decision === "remux"
+              ? "Would remove audio tracks"
+              : file.decision === "skip"
+                ? "Skipped"
+                : "Problem"}
           :
         </strong>{" "}
         {file.reason}
@@ -858,12 +881,12 @@ function FileDetailView({ id }: { id: number }) {
             {message && <span className="muted small">{message}</span>}
           </div>
         )}
-      {file.decision === "transcode" &&
+      {(file.decision === "transcode" || file.decision === "remux") &&
         !file.encoding &&
-        (!file.outcome || file.outcome.status === "failed") && (
+        (!file.outcome || ["failed", "squish", "not-worth-it"].includes(file.outcome.status)) && (
           <div className="form-actions">
             <button type="button" className="small" onClick={() => void encodeNow()}>
-              Encode now
+              {file.decision === "remux" ? "Remove them now" : "Encode now"}
             </button>
             {message && <span className="muted small">{message}</span>}
           </div>

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { languageFromName, normalizeLanguage } from "../../src/tools/transcode/languages.js";
 import { extractMediaInfo } from "../../src/tools/transcode/media.js";
-import { evaluate, type RuleSettings, resolutionOf } from "../../src/tools/transcode/rules.js";
+import {
+  evaluate,
+  type RuleSettings,
+  remuxOverride,
+  resolutionOf,
+  squishOverride,
+} from "../../src/tools/transcode/rules.js";
 import type { PlannedTrack } from "../../src/tools/transcode/shared.js";
 import { attachment, audio, probe, subtitle, video } from "./fixtures.js";
 
@@ -386,5 +392,91 @@ describe("one audio track per language", () => {
       5: "keep",
     });
     expect(r.plan?.tracks.find((t) => t.index === 2)?.makeDefault).toBe(true);
+  });
+});
+
+describe("removing other-language audio from files that aren't re-encoded", () => {
+  const efficient = () => video("hevc", 1920, 1080, { tags: { BPS: "1500000" } });
+  const decide = (p: ReturnType<typeof probe>, original: string | null = "eng") => {
+    const info = extractMediaInfo(p);
+    const base = evaluate(info, original, RULES);
+    return remuxOverride(base, info, original) ?? base;
+  };
+
+  it("drops a dub that's the default, copies the rest and makes English the default", () => {
+    const e = decide(
+      probe([
+        efficient(),
+        audio("aac", 2, "ita", "Stereo", { isDefault: true }),
+        audio("truehd", 8, "eng", "TrueHD Atmos 7.1"),
+        subtitle("subrip", "eng"),
+        subtitle("subrip", "ita"),
+      ]),
+    );
+    expect(e.decision).toBe("remux");
+    expect(e.reasonCode).toBe("foreign-audio");
+    expect(e.reason).toBe("Italian audio (it's the default) to remove; English kept");
+    expect(e.plan?.video.to).toBe("Copied as it is");
+    // TrueHD is copied, not converted: a remux never touches what it keeps.
+    expect(actions(e.plan?.tracks ?? [])).toEqual({ 1: "drop", 2: "keep", 3: "keep", 4: "drop" });
+    expect(e.plan?.tracks.find((t) => t.index === 2)?.makeDefault).toBe(true);
+    expect(e.plan?.notes.some((n) => n.includes("Atmos is lost"))).toBe(false);
+    // Only the dropped AAC's bitrate comes off.
+    expect(e.plan?.estimatedBytes).toBeLessThan(8_000_000_000);
+    expect(e.plan?.estimatedBytes).toBeGreaterThan(7_900_000_000);
+  });
+
+  it("works for files Squish encoded", () => {
+    const p = probe([efficient(), audio("aac", 2, "fre"), audio("aac", 2, "eng")]);
+    const info = extractMediaInfo(p);
+    const squish = squishOverride("/tv/Show/Show S01E01 [SQUISH].mkv", info);
+    if (!squish) throw new Error("expected Squish's override");
+    expect(remuxOverride(squish, info, "eng")?.decision).toBe("remux");
+  });
+
+  it("leaves a file with nothing but a dub alone: removing tracks can't fix it", () => {
+    const e = decide(probe([efficient(), audio("aac", 2, "fre", "VFF", { isDefault: true })]));
+    expect(e).toMatchObject({ decision: "skip", reasonCode: "already-efficient" });
+  });
+
+  it("keeps the original language of a foreign title", () => {
+    const p = probe([efficient(), audio("flac", 2, "jpn"), audio("aac", 2, "eng")]);
+    expect(decide(p, "jpn").decision).toBe("skip");
+    // An English dub of an anime is kept too, but a French one goes.
+    expect(
+      decide(probe([efficient(), audio("aac", 2, "jpn"), audio("aac", 2, "fre")]), "jpn"),
+    ).toMatchObject({ decision: "remux", reason: "French audio to remove; Japanese kept" });
+  });
+
+  it("does nothing when the original language isn't known", () => {
+    const p = probe([efficient(), audio("aac", 2, "jpn"), audio("aac", 2, "eng")]);
+    expect(decide(p, null).decision).toBe("skip");
+  });
+
+  it("doesn't count commentary or a second English track as a reason", () => {
+    const p = probe([
+      efficient(),
+      audio("ac3", 6, "eng", undefined, { isDefault: true }),
+      audio("aac", 2, "eng"),
+      audio("aac", 2, "eng", "Commentary"),
+    ]);
+    expect(decide(p).decision).toBe("skip");
+  });
+
+  it("leaves HDR, 4K and files being transcoded to their own rules", () => {
+    const tracks = [audio("aac", 2, "ita", undefined, { isDefault: true }), audio("aac", 2, "eng")];
+    expect(
+      decide(probe([video("hevc", 1920, 1080, { color_transfer: "smpte2084" }), ...tracks]))
+        .reasonCode,
+    ).toBe("hdr");
+    expect(decide(probe([video("hevc", 3840, 2160), ...tracks])).reasonCode).toBe("above-1080p");
+    expect(decide(probe([video("h264", 1920, 1080), ...tracks])).decision).toBe("transcode");
+  });
+
+  it("never touches a file Kondo made", () => {
+    const p = probe([efficient(), audio("aac", 2, "ita"), audio("aac", 2, "eng")], {
+      tags: { KONDO: "abc" },
+    });
+    expect(decide(p).reasonCode).toBe("kondo-done");
   });
 });

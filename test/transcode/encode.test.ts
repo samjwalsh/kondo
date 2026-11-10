@@ -327,6 +327,98 @@ describe.skipIf(!hasFfmpeg)("encoding a file (needs ffmpeg with x264/x265)", () 
   }, 120_000);
 });
 
+/** 20 s of H.265 with an Italian dub as the default audio, English second, two subtitles. */
+function makeDubbedHevc(file: string): void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const srt = `${file}.eng.srt`;
+  execFileSync("sh", ["-c", `printf '1\\n00:00:01,000 --> 00:00:03,000\\nHi\\n' > '${srt}'`]);
+  const tone = "sin(440*2*PI*t)|sin(440*2*PI*t)";
+  execFileSync("ffmpeg", [
+    ...["-hide_banner", "-loglevel", "error", "-y"],
+    ...["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=20"],
+    ...["-f", "lavfi", "-i", `aevalsrc=${tone}:s=48000:d=20:c=stereo`],
+    ...["-f", "lavfi", "-i", `aevalsrc=${tone}:s=48000:d=20:c=stereo`],
+    ...["-i", srt],
+    ...["-map", "0", "-map", "1", "-map", "2", "-map", "3"],
+    ...["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error"],
+    ...["-c:a", "aac", "-c:s", "srt"],
+    ...["-metadata:s:a:0", "language=ita", "-disposition:a:0", "default"],
+    ...["-metadata:s:a:1", "language=eng", "-disposition:a:1", "0"],
+    ...["-metadata:s:s:0", "language=eng"],
+    file,
+  ]);
+}
+
+describe.skipIf(!hasFfmpeg)("removing a dub (needs ffmpeg with x265)", () => {
+  it("copies the video and English audio, drops the dub and makes English the default", async () => {
+    const library = tempDir("kondo-lib-");
+    const source = path.join(library, "Show", "Show - S01E01.mkv");
+    makeDubbedHevc(source);
+    const before = execFileSync("sha256sum", [source]).toString();
+
+    const db = openDb(tempDir());
+    migrate(db, "core", coreMigrations);
+    migrate(db, "tool:transcode", migrations);
+    const settings = new SettingsStore(db, new EventBus());
+    settings.register(encodingSettings);
+    settings.register(transcodeSettings);
+    settings.update("transcode", { roots: library });
+    const store = new LibraryStore(db);
+    const withSonarr = {
+      ...integrations,
+      sonarr: {
+        configured: () => true,
+        app: "sonarr",
+        name: "Sonarr",
+        get: async () => [
+          { id: 7, title: "Show", path: "/tv/Show", originalLanguage: { name: "English" } },
+        ],
+      },
+    } as unknown as Integrations;
+    await runScan({ ...fakeJob({ fileId: 0, name: "" }), payload: {} } as JobContext<unknown>, {
+      store,
+      settings,
+      integrations: withSonarr,
+    });
+    const [file] = store.page({ filter: "remux", sort: "path", limit: 5, offset: 0 }).files;
+    expect(file?.reason).toBe("Italian audio (it's the default) to remove; English kept");
+    const id = file?.id ?? 0;
+    expect(store.nextRemux()?.id).toBe(id);
+    expect(store.nextCandidates(5)).toEqual([]);
+    expect(store.summary([library]).toRemux.count).toBe(1);
+
+    const workRoot = tempDir("kondo-work-");
+    const deps = { store, settings, workRoot, version: "test" };
+    const result = await runEncode(
+      fakeJob({ fileId: id, name: "Show - S01E01.mkv", encoder: "remux" }),
+      deps,
+    );
+    expect(result.status).toBe("awaiting-approval");
+    const outcome = store.outcome(id);
+    expect(outcome?.encoder).toBe("Remux (tracks only)");
+    expect(outcome?.details?.verify.ok).toBe(true);
+    expect(outcome?.details?.frames).toEqual([]);
+
+    const out = JSON.parse(
+      execFileSync("ffprobe", [
+        ...["-v", "error", "-print_format", "json", "-show_format", "-show_streams"],
+        path.join(workRoot, String(id), "output.mkv"),
+      ]).toString(),
+    );
+    const streams = out.streams as {
+      codec_type: string;
+      codec_name: string;
+      disposition: { default: number };
+      tags?: Record<string, string>;
+    }[];
+    expect(streams.map((s) => `${s.codec_type}:${s.codec_name}:${s.tags?.language ?? ""}`)).toEqual(
+      ["video:hevc:", "audio:aac:eng", "subtitle:subrip:eng"],
+    );
+    expect(streams[1]?.disposition.default).toBe(1);
+    expect(execFileSync("sha256sum", [source]).toString()).toBe(before);
+  }, 60_000);
+});
+
 describe("decode check", () => {
   it("ignores the throwaway output's timestamp complaints, not real decoding errors", () => {
     expect(
