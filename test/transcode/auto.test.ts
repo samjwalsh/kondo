@@ -82,13 +82,20 @@ describe("feeding the encoders", () => {
     expect(queued()).toEqual([["gpu", "E0.mkv"]]);
   });
 
-  it("offers the CPU the biggest saving, then the GPU the next", async () => {
+  it("leaves a short backlog to the CPU, biggest saving first", async () => {
     const { k, queued } = await kondoWithCandidates([3000, 1000, 2000]);
     k.settings.update("encoding", { cpuCrf: 27 });
     k.settings.update("transcode", { mode: "approval" });
+    expect(queued()).toEqual([["cpu", "E0.mkv"]]);
+  });
+
+  it("lets the GPU help with the smallest savings when it's always allowed", async () => {
+    const { k, queued } = await kondoWithCandidates([3000, 1000, 2000]);
+    k.settings.update("encoding", { cpuCrf: 27, gpuBacklogHours: 0 });
+    k.settings.update("transcode", { mode: "approval" });
     expect(queued()).toEqual([
       ["cpu", "E0.mkv"],
-      ["gpu", "E2.mkv"],
+      ["gpu", "E1.mkv"],
     ]);
   });
 });

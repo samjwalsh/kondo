@@ -5,6 +5,7 @@ import { sendFile } from "../../server/core/sendFile.js";
 import { defineTool, type Integrations } from "../../server/core/tools.js";
 import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
+import { gpuDecision } from "./backlog.js";
 import { CALIBRATION_KEY, runCalibration } from "./calibrate.js";
 import { type EncodePayload, type EncodeResult, runEncode, workDirFor } from "./encode.js";
 import { librarySettings, runScan } from "./scan.js";
@@ -208,10 +209,21 @@ export default defineTool({
       queueSwaps();
     };
 
+    /** Whether the GPU should take files now (see backlog.ts). */
+    const gpuNow = () => {
+      const encoding = ctx.settings.values("encoding");
+      return gpuDecision({
+        cpuInUse: Boolean(encoding.cpuEnabled) && Number(encoding.cpuCrf) > 0,
+        backlogSeconds: store.backlogSeconds(),
+        cpuSpeed: store.cpuSpeed(),
+        thresholdHours: Number(encoding.gpuBacklogHours ?? 0),
+      });
+    };
+
     /**
-     * Keeps up to `maxWaiting` results waiting or in progress, biggest saving first. Each
-     * encoder gets one file queued at a time, so files go to whichever encoder frees up first;
-     * the CPU (better compression) is offered the biggest saving.
+     * Keeps up to `maxWaiting` results waiting or in progress. Each encoder gets one file queued
+     * at a time. The CPU (better compression) takes the biggest saving; the GPU only helps when
+     * the CPU has a long backlog, and then takes the smallest savings.
      */
     const feed = () => {
       autoApprove();
@@ -219,8 +231,9 @@ export default defineTool({
       if (v.mode !== "approval" && v.mode !== "auto") return;
       const encoding = ctx.settings.values("encoding");
       const encoders: ("gpu" | "cpu")[] = [];
-      if (encoding.cpuEnabled && Number(encoding.cpuCrf) > 0) encoders.push("cpu");
-      if (encoding.gpuEnabled) encoders.push("gpu");
+      const cpuInUse = Boolean(encoding.cpuEnabled) && Number(encoding.cpuCrf) > 0;
+      if (cpuInUse) encoders.push("cpu");
+      if (encoding.gpuEnabled && gpuNow().useGpu) encoders.push("gpu");
       let free =
         Number(v.maxWaiting) -
         store.countOutcomes(["awaiting-approval", "approved", "swapping"]) -
@@ -228,7 +241,10 @@ export default defineTool({
       for (const encoder of encoders) {
         if (free <= 0) return;
         if (store.queuedEncodes(encoder) > 0) continue;
-        const file = store.nextCandidates(1)[0];
+        const file = store.nextCandidates(
+          1,
+          encoder === "gpu" && cpuInUse ? "smallest" : "biggest",
+        )[0];
         if (!file) return;
         ctx.enqueue<EncodePayload>(
           "encode",
@@ -591,6 +607,15 @@ export default defineTool({
         );
       }
       if (s.awaitingApproval > 0) lines.push(`${s.awaitingApproval} waiting for your approval`);
+      const gpu = gpuNow();
+      if (s.toTranscode.count > 0 && gpu.cpuHours !== null && gpu.thresholdHours > 0) {
+        const hours = Math.round(gpu.cpuHours);
+        lines.push(
+          gpu.useGpu
+            ? `GPU helping: about ${hours} h of CPU work waiting (over ${gpu.thresholdHours} h)`
+            : `CPU only: about ${hours} h of work waiting (GPU joins over ${gpu.thresholdHours} h)`,
+        );
+      }
       if (s.notYetRead > 0) lines.push(`${s.notYetRead.toLocaleString("en-GB")} still to be read`);
       if (s.problems > 0) lines.push(`${s.problems} couldn't be read`);
       return { status: s.problems > 0 ? "warn" : "ok", lines };
