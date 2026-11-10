@@ -341,7 +341,22 @@ seeder count (fake swarms report plenty of seeders anyway), or rejecting the `RA
 (it closed in 2023, so new releases with its name are fake, but its genuine old releases are
 common).
 
-## UI
+## Missing tool (search again)
+
+Sonarr and Radarr search for a missing episode or movie only when it's added, when a download
+fails, or when someone clicks Search. Otherwise they only watch their indexers' feeds of new
+releases (RSS, every 15 minutes), so a release that was already out and got missed is never
+found.
+
+Every **24 hours** (adjustable), the Missing tool asks each of them to search for up to **20**
+missing items (adjustable): monitored, already aired (Sonarr) or available (Radarr), with no
+file, and not already downloading. Items never searched come first, then the ones searched
+longest ago (Sonarr/Radarr's own `lastSearchTime`), so every item gets a turn without
+hammering the indexers. The time of the last run is kept in the database and checked every
+10 minutes, so restarts don't skip or add runs. Off by default; results on the Missing page,
+the dashboard card and the morning summary. `GET /api/tools/missing/preview` shows what the
+next run would search for.
+
 
 - **Dashboard**: one card per tool (health, what's running, next window, warnings).
 - **Transcode**: live queue (per slot, with progress and ETA) · awaiting approval ·
