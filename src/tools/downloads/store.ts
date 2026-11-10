@@ -22,6 +22,19 @@ export const migrations: Migration[] = [
       CREATE TABLE downloads_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `,
   },
+  {
+    version: 2,
+    sql: `
+      ALTER TABLE downloads_log ADD COLUMN kind TEXT NOT NULL DEFAULT 'fake';
+      ALTER TABLE downloads_log ADD COLUMN problem TEXT;
+      -- When each unfinished download last got further, so a stalled one can be spotted.
+      CREATE TABLE downloads_progress (
+        hash TEXT PRIMARY KEY,
+        downloaded INTEGER NOT NULL,
+        since TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
@@ -32,10 +45,12 @@ function toEntry(r: Record<string, unknown>): FakeEntry {
     at: String(r.at),
     hash: String(r.hash),
     name: String(r.name),
+    kind: (str(r.kind) ?? "fake") as FakeEntry["kind"],
     app: str(r.app) as FakeEntry["app"],
     what: str(r.what),
     indexer: str(r.indexer),
     badFiles: JSON.parse(String(r.bad_files)) as string[],
+    problem: str(r.problem),
     action: String(r.action) as FakeAction,
     detail: str(r.detail),
   };
@@ -47,17 +62,20 @@ export class DownloadsStore {
   log(entry: Omit<FakeEntry, "id" | "at"> & { at?: string }): void {
     this.db
       .prepare(
-        `INSERT INTO downloads_log (at, hash, name, app, what, indexer, bad_files, action, detail)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO downloads_log
+           (at, hash, name, kind, app, what, indexer, bad_files, problem, action, detail)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         entry.at ?? new Date().toISOString(),
         entry.hash,
         entry.name,
+        entry.kind,
         entry.app,
         entry.what,
         entry.indexer,
         JSON.stringify(entry.badFiles),
+        entry.problem,
         entry.action,
         entry.detail,
       );
@@ -85,6 +103,30 @@ export class DownloadsStore {
       .prepare("SELECT COUNT(*) AS n FROM downloads_log WHERE action = 'removed'")
       .get();
     return Number(row?.n ?? 0);
+  }
+
+  /** When the download last got further, or null if it hasn't been seen downloading. */
+  progress(hash: string): { downloaded: number; since: string } | null {
+    const row = this.db
+      .prepare("SELECT downloaded, since FROM downloads_progress WHERE hash = ?")
+      .get(hash);
+    return row ? { downloaded: Number(row.downloaded), since: String(row.since) } : null;
+  }
+
+  saveProgress(hash: string, downloaded: number, since: string): void {
+    this.db
+      .prepare(
+        "INSERT OR REPLACE INTO downloads_progress (hash, downloaded, since) VALUES (?, ?, ?)",
+      )
+      .run(hash, downloaded, since);
+  }
+
+  /** Forgets every download except these (finished, stopped, removed). */
+  keepProgress(hashes: string[]): void {
+    const keep = new Set(hashes);
+    const rows = this.db.prepare("SELECT hash FROM downloads_progress").all();
+    const drop = this.db.prepare("DELETE FROM downloads_progress WHERE hash = ?");
+    for (const row of rows) if (!keep.has(String(row.hash))) drop.run(String(row.hash));
   }
 
   lastCheck(): CheckInfo | null {
