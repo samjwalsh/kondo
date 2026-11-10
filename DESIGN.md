@@ -336,8 +336,10 @@ Stuck downloads are handled exactly like fakes: grab marked failed in Sonarr/Rad
 (hit-and-run rules); a magnet without its file list doesn't know yet whether it's private, but
 private-tracker grabs arrive as `.torrent` files, so they always have one.
 
-Prevention outside Kondo: public indexers in Sonarr and Radarr need at least 5 seeders, and a
-release profile rejects `RARBG` (the group closed in 2023; new releases with its name are fake).
+Not done outside Kondo, because each would also cost genuine releases: a higher minimum
+seeder count (fake swarms report plenty of seeders anyway), or rejecting the `RARBG` group
+(it closed in 2023, so new releases with its name are fake, but its genuine old releases are
+common).
 
 ## UI
 
