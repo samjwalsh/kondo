@@ -10,7 +10,7 @@ export const downloadsSettings: SettingsSection = {
   title: "Downloads",
   group: "tool",
   description:
-    "Fake releases carry a program (e.g. “Episode.exe”) instead of the video. Sonarr and Radarr refuse to import them but don't look for another release, so the episode stays missing.",
+    "Fake releases carry a program (e.g. “Episode.exe”) instead of the video; stuck downloads never get going. Sonarr and Radarr don't look for another release in either case, so the episode stays missing.",
   fields: [
     {
       key: "mode",
@@ -48,6 +48,45 @@ export const downloadsSettings: SettingsSection = {
       default: DEFAULT_BLOCKED.join("\n"),
       help: "One per line, without the dot. A torrent containing any of these is treated as fake.",
     },
+    {
+      key: "stuckMode",
+      label: "Stuck downloads",
+      type: "select",
+      default: "report",
+      options: [
+        { value: "off", label: "Off: don't check" },
+        { value: "report", label: "Report only: list them, change nothing" },
+        {
+          value: "remove",
+          label: "Remove: blocklist in Sonarr/Radarr (which then search again) and delete",
+        },
+      ],
+    },
+    {
+      key: "stuckMetadataMinutes",
+      label: "Stuck if no file list after (minutes)",
+      type: "number",
+      default: 60,
+      min: 10,
+      max: 10080,
+      help: "A healthy magnet link gets its file list within minutes. Stopped and queued time doesn't count.",
+    },
+    {
+      key: "stuckHours",
+      label: "Stuck if no progress for (hours)",
+      type: "number",
+      default: 6,
+      min: 1,
+      max: 720,
+      help: "Counted from when Kondo last saw the download get further; stopped and queued time doesn't count.",
+    },
+    {
+      key: "stuckLeavePrivate",
+      label: "Leave private-tracker downloads alone",
+      type: "boolean",
+      default: true,
+      help: "Private trackers have hit-and-run rules, and their downloads rarely stall for good.",
+    },
   ],
 };
 
@@ -57,10 +96,19 @@ const lines = (v: unknown) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+function waitingText(waiting: DownloadsStatus["waiting"]): string | null {
+  const parts = [
+    waiting.fakes > 0 ? `${waiting.fakes} fake` : null,
+    waiting.stuck > 0 ? `${waiting.stuck} stuck` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? `${parts.join(" and ")} download(s)` : null;
+}
+
 export default defineTool({
   id: "downloads",
   name: "Downloads",
-  description: "Clears fake releases out of Sonarr's and Radarr's downloads so they search again.",
+  description:
+    "Clears fake and stuck releases out of Sonarr's and Radarr's downloads so they search again.",
   settings: [downloadsSettings],
   migrations,
 
@@ -68,11 +116,13 @@ export default defineTool({
     const store = new DownloadsStore(ctx.db);
     const qb = ctx.integrations.qbittorrent;
     const mode = () => String(ctx.settings.values("downloads").mode) as DownloadsMode;
+    const stuckMode = () => String(ctx.settings.values("downloads").stuckMode) as DownloadsMode;
+    const enabled = () => mode() !== "off" || stuckMode() !== "off";
     const check = () => ctx.enqueue("check", {}, { dedupeKey: "downloads:check" });
 
     ctx.defineJob<Record<string, never>, CheckResult>("check", {
       slot: "general",
-      title: () => "Look for fake downloads",
+      title: () => "Look for fake and stuck downloads",
       run: async (job) => {
         const v = ctx.settings.values("downloads");
         try {
@@ -83,11 +133,18 @@ export default defineTool({
             mode: mode(),
             categories: lines(v.categories),
             extensions: lines(v.extensions),
+            stuck: {
+              mode: stuckMode(),
+              metadataMinutes: Number(v.stuckMetadataMinutes),
+              noProgressHours: Number(v.stuckHours),
+              leavePrivate: v.stuckLeavePrivate !== false,
+            },
           });
           store.saveCheck({
             at: new Date().toISOString(),
             torrents: result.torrents,
-            fakes: result.fakes - result.removed,
+            fakes: result.left.fakes,
+            stuck: result.left.stuck,
             error: null,
           });
           return result;
@@ -106,12 +163,12 @@ export default defineTool({
     ctx.every(
       () => Number(ctx.settings.values("downloads").everyMinutes) * 60_000,
       () => {
-        if (mode() !== "off" && qb.configured()) check();
+        if (enabled() && qb.configured()) check();
       },
       60_000,
     );
     ctx.events.subscribe((event) => {
-      if (event.type === "settings.changed" && event.scope === "downloads" && mode() !== "off") {
+      if (event.type === "settings.changed" && event.scope === "downloads" && enabled()) {
         if (qb.configured()) check();
       }
     });
@@ -120,9 +177,10 @@ export default defineTool({
       const last = store.lastCheck();
       return {
         mode: mode(),
+        stuckMode: stuckMode(),
         configured: qb.configured(),
         lastCheck: last,
-        waiting: mode() === "remove" ? 0 : (last?.fakes ?? 0),
+        waiting: { fakes: last?.fakes ?? 0, stuck: last?.stuck ?? 0 },
         removed: store.countRemoved(),
       };
     };
@@ -143,7 +201,9 @@ export default defineTool({
     ctx.setCard(() => {
       const s = status();
       if (!s.configured) return { status: "warn", lines: ["Set up qBittorrent in Settings."] };
-      if (s.mode === "off") return { status: "ok", lines: ["Switched off."] };
+      if (s.mode === "off" && s.stuckMode === "off") {
+        return { status: "ok", lines: ["Switched off."] };
+      }
       const out: string[] = [];
       if (s.lastCheck?.error) {
         return { status: "warn", lines: [`Last check failed: ${s.lastCheck.error}`] };
@@ -151,27 +211,28 @@ export default defineTool({
       out.push(
         s.lastCheck ? `${s.lastCheck.torrents} downloads checked` : "Waiting for the first check…",
       );
-      if (s.waiting > 0) {
-        out.push(`${s.waiting} fake download(s) found; set Mode to Remove to clear them`);
-      }
-      if (s.removed > 0) out.push(`${s.removed} fake download(s) removed so far`);
-      return { status: s.waiting > 0 ? "warn" : "ok", lines: out };
+      const waiting = waitingText(s.waiting);
+      if (waiting) out.push(`${waiting} left in qBittorrent; see Downloads`);
+      if (s.removed > 0) out.push(`${s.removed} bad download(s) removed so far`);
+      return { status: waiting ? "warn" : "ok", lines: out };
     });
 
     ctx.addSummary((since) => {
       const recent = store.entries({ since, limit: 1000 });
-      const removed = recent.filter((e) => e.action === "removed");
       const out: string[] = [];
-      if (removed.length > 0) {
+      for (const [kind, noun] of [
+        ["fake", "fake download(s)"],
+        ["stuck", "stuck download(s)"],
+      ] as const) {
+        const removed = recent.filter((e) => e.action === "removed" && e.kind === kind);
+        if (removed.length === 0) continue;
         const names = removed.map((e) => e.what ?? e.name).slice(0, 5);
         out.push(
-          `Removed ${removed.length} fake download(s), searching again: ${names.join(", ")}${removed.length > 5 ? "…" : ""}.`,
+          `Removed ${removed.length} ${noun}, searching again: ${names.join(", ")}${removed.length > 5 ? "…" : ""}.`,
         );
       }
-      const waiting = status().waiting;
-      if (waiting > 0) out.push(`${waiting} fake download(s) waiting (report-only mode).`);
-      const errors = recent.filter((e) => e.action === "error").length;
-      if (errors > 0) out.push(`${errors} fake download(s) couldn't be removed; see Downloads.`);
+      const waiting = waitingText(status().waiting);
+      if (waiting) out.push(`${waiting} left in qBittorrent; see Downloads.`);
       return out;
     });
   },

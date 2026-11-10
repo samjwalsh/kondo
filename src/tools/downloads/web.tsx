@@ -15,8 +15,8 @@ const checkFinished = (event: { type: string; job?: { tool: string; state: strin
 
 const MODE: Record<DownloadsStatus["mode"], string> = {
   off: "Off",
-  report: "Report only: fakes are listed, nothing is changed",
-  remove: "Remove: fakes are blocklisted in Sonarr/Radarr (which search again) and deleted",
+  report: "Report only: listed, nothing is changed",
+  remove: "Remove: blocklisted in Sonarr/Radarr (which search again) and deleted",
 };
 
 const ACTION: Record<FakeEntry["action"], string> = {
@@ -49,9 +49,10 @@ export function DownloadsPage() {
         </button>
       </div>
       <p className="muted">
-        Fake releases carry a program (e.g. “Episode.exe”) instead of the video. Sonarr and Radarr
-        refuse to import them but don't search again, so the episode stays missing while the fake
-        keeps seeding. Kondo looks inside each download in qBittorrent to find them.
+        Fake releases carry a program (e.g. “Episode.exe”) instead of the video; stuck downloads
+        never get their file list or stop getting further (often a fake swarm with no real seed).
+        Sonarr and Radarr don't search again in either case, so the episode stays missing. Kondo
+        checks each of their downloads in qBittorrent to find them.
       </p>
       {message && <p className="muted small">{message}</p>}
 
@@ -62,7 +63,10 @@ export function DownloadsPage() {
           ) : (
             <>
               <p>
-                Mode: <strong>{MODE[s.mode]}</strong>
+                Fakes: <strong>{MODE[s.mode]}</strong>
+              </p>
+              <p>
+                Stuck: <strong>{MODE[s.stuckMode]}</strong>
               </p>
               <p className="muted small">
                 {s.lastCheck
@@ -71,10 +75,16 @@ export function DownloadsPage() {
                     : `Last checked ${ago(s.lastCheck.at)}: ${count(s.lastCheck.torrents)} downloads`
                   : "Not checked yet."}
               </p>
-              {s.waiting > 0 && (
+              {s.waiting.fakes + s.waiting.stuck > 0 && (
                 <p className="warn">
-                  {s.waiting} fake download(s) found. Set Mode to Remove in Settings → Downloads to
-                  clear them.
+                  {[
+                    s.waiting.fakes > 0 ? `${s.waiting.fakes} fake` : null,
+                    s.waiting.stuck > 0 ? `${s.waiting.stuck} stuck` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" and ")}{" "}
+                  download(s) still in qBittorrent: listed below. To clear them, set Remove in
+                  Settings → Downloads.
                 </p>
               )}
             </>
@@ -82,7 +92,7 @@ export function DownloadsPage() {
         </Card>
       )}
 
-      <h2>Fakes found</h2>
+      <h2>Bad downloads found</h2>
       {log && log.length === 0 && <p className="muted">None so far.</p>}
       {log && log.length > 0 && (
         <div className="card history">
@@ -92,6 +102,7 @@ export function DownloadsPage() {
                 <div className="log-line">
                   <span className="muted small">{ago(e.at)}</span>
                   <span className={`pill fake ${e.action}`}>{ACTION[e.action]}</span>
+                  <span className="pill">{e.kind === "stuck" ? "Stuck" : "Fake"}</span>
                   <span className="log-name">
                     <strong>{e.what ?? e.name}</strong>
                     {e.what && <span className="muted small"> {e.name}</span>}
@@ -106,7 +117,7 @@ export function DownloadsPage() {
                   </span>
                 </div>
                 <p className="muted small log-detail">
-                  Contains {e.badFiles.join(", ")}
+                  {e.problem ?? `Contains ${e.badFiles.join(", ")}`}
                   {e.detail && `. ${e.detail}`}
                 </p>
               </li>

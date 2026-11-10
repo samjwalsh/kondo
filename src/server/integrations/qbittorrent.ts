@@ -33,6 +33,14 @@ export interface Torrent {
   size: number;
   /** Where the download lives (qBittorrent's own path). */
   contentPath: string;
+  /** 0–1. */
+  progress: number;
+  /** Bytes downloaded so far (all sessions). */
+  downloaded: number;
+  /** Seconds the torrent has been running (not stopped or queued). */
+  timeActive: number;
+  /** From a private tracker; null until qBittorrent has the metadata. */
+  private: boolean | null;
 }
 
 export interface TorrentFile {
@@ -99,6 +107,10 @@ export class QbittorrentClient {
       state: string;
       size: number;
       content_path: string;
+      progress: number;
+      downloaded: number;
+      time_active: number;
+      private?: boolean | null;
     }[];
     return raw.map((t) => ({
       hash: t.hash,
@@ -107,6 +119,10 @@ export class QbittorrentClient {
       state: t.state,
       size: t.size,
       contentPath: t.content_path,
+      progress: t.progress,
+      downloaded: t.downloaded,
+      timeActive: t.time_active,
+      private: t.private ?? null,
     }));
   }
 

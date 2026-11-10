@@ -293,7 +293,7 @@ A separate action on the Transcode page, with a check (dry-run list) first:
   A `[SQUISH]` name alone doesn't prove Squish encoded it (it renamed at least one
   H.264 file without encoding it), so only H.265 files count.
 
-## Downloads tool (fake releases)
+## Downloads tool (fake and stuck releases)
 
 Fake releases on public trackers carry a program (`Episode.exe`, often with decoy videos in
 a `vis/` folder) instead of the video. Sonarr/Radarr refuse to import them ("potentially
@@ -316,6 +316,28 @@ itself downloads any file type (it's also used for software by hand); only the `
 `radarr` categories are checked. Prevention outside Kondo: a 120-minute torrent delay profile
 in Sonarr and Radarr (bypass for highest quality off), so RSS doesn't grab the first, often
 fake, release.
+
+### Stuck downloads
+
+Some public-tracker grabs never start: the magnet link sits on "downloading metadata" for
+days with thousands of "peers" and no real seed (a fake swarm), or a download stops getting
+further. Sonarr/Radarr show it as downloading forever and never search again.
+
+The same check (with its own off / report-only / remove setting) counts a `sonarr`/`radarr`
+download as **stuck** when it is running (not stopped or queued) and either
+- still has no file list after **60 minutes** of running time (qBittorrent's `time_active`), or
+- hasn't downloaded another byte for **6 hours**. qBittorrent has no "last progress" time, so
+  Kondo stores each unfinished download's byte count and when it last changed
+  (`downloads_progress`); a download that is stopped, queued, finished or removed is
+  forgotten, so its clock starts again when it resumes.
+
+Stuck downloads are handled exactly like fakes: grab marked failed in Sonarr/Radarr
+(blocklist + search again), then deleted. Private-tracker downloads are left alone by default
+(hit-and-run rules); a magnet without its file list doesn't know yet whether it's private, but
+private-tracker grabs arrive as `.torrent` files, so they always have one.
+
+Prevention outside Kondo: public indexers in Sonarr and Radarr need at least 5 seeders, and a
+release profile rejects `RARBG` (the group closed in 2023; new releases with its name are fake).
 
 ## UI
 
