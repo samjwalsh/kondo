@@ -49,6 +49,31 @@ export interface GrabRecord {
   indexer: string | null;
 }
 
+/** A monitored episode or movie that has no file yet. */
+export interface MissingItem {
+  /** Episode id (Sonarr) or movie id (Radarr). */
+  id: number;
+  /** e.g. "NCIS S24E04" or "Wind River (2017)". */
+  what: string;
+  /** When Sonarr/Radarr last searched for it, if ever. */
+  lastSearchTime: string | null;
+}
+
+interface RawMissing {
+  id: number;
+  title?: string;
+  year?: number;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  series?: { title: string };
+  lastSearchTime?: string | null;
+  /** Radarr: released enough for its minimum availability. */
+  isAvailable?: boolean;
+}
+
+const episodeName = (series: string, season: number, episode: number) =>
+  `${series} S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+
 export class ArrClient {
   constructor(
     readonly app: ArrApp,
@@ -103,7 +128,7 @@ export class ArrClient {
     if (!r) return null;
     const episode =
       r.episode && r.series
-        ? `${r.series.title} S${String(r.episode.seasonNumber).padStart(2, "0")}E${String(r.episode.episodeNumber).padStart(2, "0")}`
+        ? episodeName(r.series.title, r.episode.seasonNumber, r.episode.episodeNumber)
         : null;
     return {
       id: r.id,
@@ -119,6 +144,53 @@ export class ArrClient {
    */
   async markFailed(historyId: number): Promise<void> {
     await this.post(`/history/failed/${historyId}`, {});
+  }
+
+  /**
+   * Monitored episodes (already aired) or movies (already available) with no file. Sonarr and
+   * Radarr only search for these when told to; otherwise they wait for new releases.
+   */
+  async missing(): Promise<MissingItem[]> {
+    const items: MissingItem[] = [];
+    for (let page = 1; ; page++) {
+      const result = await this.get<{ records?: RawMissing[]; totalRecords?: number }>(
+        `/wanted/missing?page=${page}&pageSize=500&monitored=true${
+          this.app === "sonarr" ? "&includeSeries=true" : ""
+        }`,
+      );
+      const records = result.records ?? [];
+      for (const r of records) {
+        if (this.app === "radarr" && r.isAvailable === false) continue;
+        items.push({
+          id: r.id,
+          what:
+            this.app === "sonarr" && r.series
+              ? episodeName(r.series.title, r.seasonNumber ?? 0, r.episodeNumber ?? 0)
+              : `${r.title ?? `#${r.id}`}${r.year ? ` (${r.year})` : ""}`,
+          lastSearchTime: r.lastSearchTime ?? null,
+        });
+      }
+      if (records.length === 0 || page * 500 >= (result.totalRecords ?? 0)) return items;
+    }
+  }
+
+  /** Episode (Sonarr) or movie (Radarr) ids that already have a download in the queue. */
+  async queuedIds(): Promise<Set<number>> {
+    const page = await this.get<{ records?: { episodeId?: number; movieId?: number }[] }>(
+      "/queue?pageSize=1000",
+    );
+    const ids = (page.records ?? []).map((r) => (this.app === "sonarr" ? r.episodeId : r.movieId));
+    return new Set(ids.filter((id): id is number => typeof id === "number"));
+  }
+
+  /** Searches every indexer for these episodes (Sonarr) or movies (Radarr). */
+  async search(ids: number[]): Promise<void> {
+    await this.post(
+      "/command",
+      this.app === "sonarr"
+        ? { name: "EpisodeSearch", episodeIds: ids }
+        : { name: "MoviesSearch", movieIds: ids },
+    );
   }
 
   private url(path: string): string {
