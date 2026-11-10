@@ -6,6 +6,8 @@ export interface MissingRun {
   app: "sonarr" | "radarr";
   /** Monitored items with no file, not counting ones already downloading. */
   missing: number;
+  /** Items whose file Sonarr/Radarr would replace (below the custom format cutoff), e.g. a dub. */
+  upgrades: number;
   /** What this run asked Sonarr/Radarr to search for, e.g. "NCIS S24E04". */
   searched: string[];
   error: string | null;
@@ -15,6 +17,8 @@ export interface MissingStatus {
   enabled: boolean;
   everyHours: number;
   perRun: number;
+  /** Also searches for files Sonarr/Radarr would replace. */
+  upgrades: boolean;
   lastRunAt: string | null;
   /** When the next run is due (null while switched off). */
   nextRunAt: string | null;

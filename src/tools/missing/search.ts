@@ -3,6 +3,10 @@
 // releases. A release that was already out (and missed) is never found again. This asks them to
 // search for a few missing items per run, the ones searched longest ago (or never) first, so
 // every missing item gets a turn without hammering the indexers.
+//
+// The same goes for a file Sonarr/Radarr would replace because of its custom formats (e.g. one
+// with only a dub): their Cutoff Unmet list only counts quality, so nothing searches for a
+// better release. Those take turns with the missing items.
 
 import type { JobContext } from "../../server/core/jobs.js";
 import type { ArrClient, MissingItem } from "../../server/integrations/arr.js";
@@ -11,8 +15,13 @@ import type { MissingStore } from "./store.js";
 
 export interface SearchDeps {
   store: MissingStore;
-  arrs: Pick<ArrClient, "app" | "name" | "configured" | "missing" | "queuedIds" | "search">[];
+  arrs: Pick<
+    ArrClient,
+    "app" | "name" | "configured" | "missing" | "belowFormatCutoff" | "queuedIds" | "search"
+  >[];
   perRun: number;
+  /** Also search for files below their custom format cutoff. */
+  upgrades: boolean;
   now?: () => number;
 }
 
@@ -25,35 +34,73 @@ export function pickItems(items: MissingItem[], queued: Set<number>, limit: numb
     .slice(0, limit);
 }
 
+/** Each item's later of Sonarr/Radarr's last search and Kondo's own. */
+export function withOwnSearches(items: MissingItem[], own: Map<number, string>): MissingItem[] {
+  return items.map((item) => {
+    const mine = own.get(item.id);
+    if (!mine) return item;
+    const theirs = item.lastSearchTime;
+    return theirs && Date.parse(theirs) >= Date.parse(mine)
+      ? item
+      : { ...item, lastSearchTime: mine };
+  });
+}
+
 export interface SearchResult {
   searched: number;
   missing: number;
+  upgrades: number;
   failed: number;
 }
 
 export async function runSearch(job: JobContext<unknown>, deps: SearchDeps): Promise<SearchResult> {
   const at = new Date((deps.now ?? Date.now)()).toISOString();
-  const result: SearchResult = { searched: 0, missing: 0, failed: 0 };
+  const result: SearchResult = { searched: 0, missing: 0, upgrades: 0, failed: 0 };
   for (const arr of deps.arrs) {
     if (!arr.configured()) continue;
     await job.checkpoint();
     try {
       const queued = await arr.queuedIds();
       const missing = (await arr.missing()).filter((item) => !queued.has(item.id));
-      const picked = pickItems(missing, queued, deps.perRun);
-      if (picked.length > 0) await arr.search(picked.map((item) => item.id));
+      const upgrades = deps.upgrades
+        ? (await arr.belowFormatCutoff()).filter((item) => !queued.has(item.id))
+        : [];
+      const picked = pickItems(
+        withOwnSearches([...missing, ...upgrades], deps.store.searchedAt(arr.app)),
+        queued,
+        deps.perRun,
+      );
+      if (picked.length > 0) {
+        await arr.search(picked.map((item) => item.id));
+        deps.store.markSearched(
+          arr.app,
+          picked.map((item) => item.id),
+          at,
+        );
+      }
       deps.store.log({
         at,
         app: arr.app,
         missing: missing.length,
+        upgrades: upgrades.length,
         searched: picked.map((item) => item.what),
         error: null,
       });
-      job.log(`${arr.name}: ${missing.length} missing, asked to search for ${picked.length}`);
+      job.log(
+        `${arr.name}: ${missing.length} missing, ${upgrades.length} to replace, asked to search for ${picked.length}`,
+      );
       result.searched += picked.length;
       result.missing += missing.length;
+      result.upgrades += upgrades.length;
     } catch (error) {
-      deps.store.log({ at, app: arr.app, missing: 0, searched: [], error: errorMessage(error) });
+      deps.store.log({
+        at,
+        app: arr.app,
+        missing: 0,
+        upgrades: 0,
+        searched: [],
+        error: errorMessage(error),
+      });
       job.log(`${arr.name}: ${errorMessage(error)}`, "warn");
       result.failed++;
     }

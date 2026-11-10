@@ -71,6 +71,44 @@ interface RawMissing {
   isAvailable?: boolean;
 }
 
+interface RawProfile {
+  id: number;
+  upgradeAllowed: boolean;
+  cutoffFormatScore: number;
+  formatItems: { score: number }[];
+}
+
+interface RawFile {
+  id: number;
+  customFormatScore?: number;
+  customFormats?: { name: string }[];
+}
+
+interface RawSeries {
+  id: number;
+  title: string;
+  monitored: boolean;
+  qualityProfileId: number;
+}
+
+interface RawEpisode {
+  id: number;
+  seasonNumber: number;
+  episodeNumber: number;
+  monitored: boolean;
+  episodeFileId?: number;
+  lastSearchTime?: string | null;
+}
+
+interface RawMovie {
+  id: number;
+  title: string;
+  year?: number;
+  monitored: boolean;
+  hasFile?: boolean;
+  qualityProfileId: number;
+}
+
 const episodeName = (series: string, season: number, episode: number) =>
   `${series} S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
 
@@ -172,6 +210,77 @@ export class ArrClient {
       }
       if (records.length === 0 || page * 500 >= (result.totalRecords ?? 0)) return items;
     }
+  }
+
+  /**
+   * Monitored episodes or movies whose file scores below its profile's "upgrade until" custom
+   * format score, in profiles that allow upgrades: files Sonarr/Radarr would replace with a better
+   * release, e.g. one with only a dub. Their own Cutoff Unmet list counts only quality, so
+   * nothing searches for these once the file is in.
+   */
+  async belowFormatCutoff(): Promise<MissingItem[]> {
+    const profiles = new Map(
+      (await this.get<RawProfile[]>("/qualityprofile"))
+        .filter((p) => p.upgradeAllowed && p.formatItems.some((f) => f.score !== 0))
+        .map((p) => [p.id, p.cutoffFormatScore]),
+    );
+    if (profiles.size === 0) return [];
+    const below = (file: RawFile | undefined, profileId: number) => {
+      const cutoff = profiles.get(profileId);
+      return (
+        file !== undefined &&
+        cutoff !== undefined &&
+        typeof file.customFormatScore === "number" &&
+        file.customFormatScore < cutoff
+      );
+    };
+    const why = (file: RawFile) => {
+      const names = (file.customFormats ?? []).map((f) => f.name).filter(Boolean);
+      return names.length > 0 ? ` (${names.join(", ")})` : "";
+    };
+    const items: MissingItem[] = [];
+    if (this.app === "radarr") {
+      // The movie list leaves out the file's score: ask for the files, 100 movies at a time.
+      const movies = (await this.get<RawMovie[]>("/movie")).filter(
+        (m) => m.monitored && m.hasFile && profiles.has(m.qualityProfileId),
+      );
+      for (let i = 0; i < movies.length; i += 100) {
+        const batch = new Map(movies.slice(i, i + 100).map((m) => [m.id, m]));
+        const query = [...batch.keys()].map((id) => `movieId=${id}`).join("&");
+        for (const file of await this.get<(RawFile & { movieId: number })[]>(
+          `/moviefile?${query}`,
+        )) {
+          const m = batch.get(file.movieId);
+          if (!m || !below(file, m.qualityProfileId)) continue;
+          items.push({
+            id: m.id,
+            what: `${m.title}${m.year ? ` (${m.year})` : ""}${why(file)}`,
+            // Radarr's movie list doesn't say; the Missing tool remembers its own searches.
+            lastSearchTime: null,
+          });
+        }
+      }
+      return items;
+    }
+    for (const series of await this.get<RawSeries[]>("/series")) {
+      if (!series.monitored || !profiles.has(series.qualityProfileId)) continue;
+      const files = new Map(
+        (await this.get<RawFile[]>(`/episodefile?seriesId=${series.id}`))
+          .filter((f) => below(f, series.qualityProfileId))
+          .map((f) => [f.id, f]),
+      );
+      if (files.size === 0) continue;
+      for (const e of await this.get<RawEpisode[]>(`/episode?seriesId=${series.id}`)) {
+        const file = e.episodeFileId ? files.get(e.episodeFileId) : undefined;
+        if (!file || !e.monitored) continue;
+        items.push({
+          id: e.id,
+          what: `${episodeName(series.title, e.seasonNumber, e.episodeNumber)}${why(file)}`,
+          lastSearchTime: e.lastSearchTime ?? null,
+        });
+      }
+    }
+    return items;
   }
 
   /** Episode (Sonarr) or movie (Radarr) ids that already have a download in the queue. */

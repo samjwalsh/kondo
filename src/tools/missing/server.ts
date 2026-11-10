@@ -22,6 +22,13 @@ export const missingSettings: SettingsSection = {
       help: "24 = once a day, 168 = once a week.",
     },
     {
+      key: "upgrades",
+      label: "Also search for files to replace",
+      type: "boolean",
+      default: true,
+      help: "Files Sonarr/Radarr would replace because of their custom formats (e.g. a dub where the profile penalises it). Their Cutoff Unmet list ignores custom formats, so nothing else searches for these.",
+    },
+    {
       key: "perRun",
       label: "Items per run (each for Sonarr and Radarr)",
       type: "number",
@@ -38,7 +45,8 @@ const HOUR = 3_600_000;
 export default defineTool({
   id: "missing",
   name: "Missing",
-  description: "Asks Sonarr and Radarr to search again for missing episodes and movies.",
+  description:
+    "Asks Sonarr and Radarr to search again for missing episodes and movies, and for files they'd replace.",
   settings: [missingSettings],
   migrations,
 
@@ -48,6 +56,7 @@ export default defineTool({
     const values = () => ctx.settings.values("missing");
     const enabled = () => values().enabled === true;
     const perRun = () => Number(values().perRun);
+    const upgrades = () => values().upgrades !== false;
     const search = () => ctx.enqueue("search", {}, { dedupeKey: "missing:search" });
 
     const status = (): MissingStatus => {
@@ -57,6 +66,7 @@ export default defineTool({
         enabled: enabled(),
         everyHours,
         perRun: perRun(),
+        upgrades: upgrades(),
         lastRunAt,
         nextRunAt: !enabled()
           ? null
@@ -73,7 +83,7 @@ export default defineTool({
     ctx.defineJob<Record<string, never>, SearchResult>("search", {
       slot: "general",
       title: () => "Search for missing episodes and movies",
-      run: (job) => runSearch(job, { store, arrs, perRun: perRun() }),
+      run: (job) => runSearch(job, { store, arrs, perRun: perRun(), upgrades: upgrades() }),
     });
 
     // Checked every 10 minutes against the last run (kept in the database), so restarts
@@ -99,14 +109,18 @@ export default defineTool({
       });
       // What the next run would search for, without searching.
       app.get("/preview", async () => {
-        const out: Record<string, { missing: number; next: string[] }> = {};
+        const out: Record<string, { missing: number; upgrades: number; next: string[] }> = {};
         for (const arr of arrs) {
           if (!arr.configured()) continue;
           const queued = await arr.queuedIds();
           const missing = (await arr.missing()).filter((item) => !queued.has(item.id));
+          const replace = upgrades()
+            ? (await arr.belowFormatCutoff()).filter((item) => !queued.has(item.id))
+            : [];
           out[arr.app] = {
             missing: missing.length,
-            next: pickItems(missing, queued, perRun()).map((item) => item.what),
+            upgrades: replace.length,
+            next: pickItems([...missing, ...replace], queued, perRun()).map((item) => item.what),
           };
         }
         return out;
@@ -122,7 +136,7 @@ export default defineTool({
         .filter((r) => !r.error)
         .map(
           (r) =>
-            `${r.app === "sonarr" ? "Sonarr" : "Radarr"}: ${r.missing} missing, searched ${r.searched.length}`,
+            `${r.app === "sonarr" ? "Sonarr" : "Radarr"}: ${r.missing} missing${r.upgrades > 0 ? `, ${r.upgrades} to replace` : ""}, searched ${r.searched.length}`,
         );
       if (failed.length > 0)
         lines.push(`Last run failed: ${failed.map((r) => r.error).join("; ")}`);
