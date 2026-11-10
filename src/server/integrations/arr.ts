@@ -59,6 +59,11 @@ export interface MissingItem {
   title: string;
   /** When Sonarr/Radarr last searched for it, if ever. */
   lastSearchTime: string | null;
+  /**
+   * Radarr: the earliest digital or physical release date that has passed, or null if none has
+   * (a film only in cinemas). Sonarr: not set.
+   */
+  homeRelease?: string | null;
 }
 
 interface RawMissing {
@@ -71,6 +76,8 @@ interface RawMissing {
   lastSearchTime?: string | null;
   /** Radarr: released enough for its minimum availability. */
   isAvailable?: boolean;
+  digitalRelease?: string;
+  physicalRelease?: string;
 }
 
 /** A download Sonarr/Radarr can't finish on their own. */
@@ -82,11 +89,14 @@ export interface QueueProblem {
   /** The release name. */
   release: string;
   problem: string;
+  /** Still downloading but stuck, rather than downloaded and not imported. */
+  stalled: boolean;
 }
 
 interface RawQueue {
   id: number;
   title?: string;
+  status?: string;
   trackedDownloadStatus?: string;
   trackedDownloadState?: string;
   statusMessages?: { title?: string; messages?: string[] }[];
@@ -132,6 +142,14 @@ interface RawMovie {
   monitored: boolean;
   hasFile?: boolean;
   qualityProfileId: number;
+}
+
+/** The earliest digital or physical release that has already happened, if any. */
+function homeRelease(r: RawMissing, now = Date.now()): string | null {
+  const dates = [r.digitalRelease, r.physicalRelease]
+    .filter((d): d is string => typeof d === "string" && Date.parse(d) <= now)
+    .sort();
+  return dates[0] ?? null;
 }
 
 const episodeName = (series: string, season: number, episode: number) =>
@@ -232,6 +250,7 @@ export class ArrClient {
               ? episodeName(r.series.title, r.seasonNumber ?? 0, r.episodeNumber ?? 0)
               : movie,
           title: this.app === "sonarr" && r.series ? r.series.title : movie,
+          ...(this.app === "radarr" ? { homeRelease: homeRelease(r) } : {}),
           lastSearchTime: r.lastSearchTime ?? null,
         });
       }
@@ -314,8 +333,9 @@ export class ArrClient {
   }
 
   /**
-   * Downloads Sonarr/Radarr can't finish on their own: import blocked or pending, or flagged with
-   * a warning or error (e.g. "Unable to match", "manual import required").
+   * Downloads that need help: ones Sonarr/Radarr can't import on their own (import blocked or
+   * pending, or flagged with a warning or error, e.g. "Unable to match"), and ones the download
+   * client reports as stuck ("stalled with no connections", "downloading metadata").
    */
   async queueProblems(): Promise<QueueProblem[]> {
     const page = await this.get<{ records?: RawQueue[] }>(
@@ -327,8 +347,14 @@ export class ArrClient {
     for (const r of page.records ?? []) {
       const state = r.trackedDownloadState ?? "";
       const flagged = r.trackedDownloadStatus === "warning" || r.trackedDownloadStatus === "error";
-      if (!flagged && !["importBlocked", "importPending", "failedPending"].includes(state))
-        continue;
+      const importing =
+        flagged || ["importBlocked", "importPending", "failedPending"].includes(state);
+      // Still downloading, but the client says it's stuck.
+      const stalled =
+        !importing &&
+        state === "downloading" &&
+        (r.status === "warning" || (r.errorMessage ?? "") !== "");
+      if (!importing && !stalled) continue;
       const messages = (r.statusMessages ?? []).flatMap((m) => m.messages ?? []);
       const what =
         r.series && r.episode
@@ -341,6 +367,7 @@ export class ArrClient {
         what,
         release: r.title ?? "",
         problem: messages[0] ?? r.errorMessage ?? state,
+        stalled,
       });
     }
     return out;

@@ -3,14 +3,14 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { coreMigrations, migrate, openDb } from "../src/server/core/db.js";
 import type { SettingsStore } from "../src/server/core/settings.js";
-import { ArrClient, type MissingItem } from "../src/server/integrations/arr.js";
+import { ArrClient, type MissingItem, type QueueProblem } from "../src/server/integrations/arr.js";
 import { attentionStatus, ping, runCheck, summaryLines } from "../src/tools/attention/check.js";
 import { AttentionStore, migrations } from "../src/tools/attention/store.js";
 import { tempDir } from "./helpers.js";
 
 const DAY = 86_400_000;
 const T0 = Date.parse("2026-11-10T12:00:00Z");
-const LIMITS = { stuckDays: 14, stuckHours: 6 };
+const LIMITS = { stuckDays: 1, stuckHours: 6 };
 
 const episode = (id: number, title: string, n: number): MissingItem => ({
   id,
@@ -28,7 +28,16 @@ function setup() {
     missing: [episode(1, "Show", 1), episode(2, "Show", 2)] as MissingItem[],
     replace: [episode(3, "Family Guy", 1)] as MissingItem[],
     queued: new Set<number>(),
-    queue: [{ id: 50, what: "Other S02E01", release: "x", problem: "Unable to match" }],
+    queue: [
+      { id: 50, what: "Other S02E01", release: "x", problem: "Unable to match", stalled: false },
+      {
+        id: 51,
+        what: "Old Show S01E03",
+        release: "y",
+        problem: "The download is stalled with no connections",
+        stalled: true,
+      },
+    ] as QueueProblem[],
     health: [
       { source: "AllowedHostsCheck", message: "Allowed Hosts is not configured" },
       {
@@ -84,7 +93,8 @@ describe("needs a look", () => {
     await t.check();
     const s = t.status();
     expect(s.due).toEqual([]);
-    expect(s.watching).toBe(5); // 2 missing, 1 to replace, 1 queue problem, 1 health warning
+    // 2 missing, 1 to replace, 1 failed import, 1 stalled download, 1 health warning
+    expect(s.watching).toBe(6);
     expect(summaryLines(s)).toEqual([]);
   });
 
@@ -100,42 +110,71 @@ describe("needs a look", () => {
         .sort(),
     ).toEqual(["health", "import"]);
 
-    t.at(T0 + 15 * DAY);
+    t.at(T0 + DAY);
     await t.check();
     expect(summaryLines(t.status())).toEqual([
       "Needs a look:",
-      "• Not found after 14+ days: Show (2 episodes)",
-      "• Still waiting for a better copy (e.g. not just a dub) after 14+ days: Family Guy (1 episode)",
+      "• Not found or not finished after a day: Show (2 episodes)",
+      "• Still waiting for a better copy (e.g. not just a dub) after a day: Family Guy (1 episode)",
+      "• Download stuck for a day: Old Show S01E03 (The download is stalled with no connections)",
       "• Stuck in the download queue for 6+ h: Other S02E01 (Sonarr: Unable to match)",
       "• Sonarr: Indexers unavailable due to failures: LimeTorrents",
     ]);
   });
 
+  it("keeps the clock running while a replacement downloads, fails and is tried again", async () => {
+    const t = setup();
+    await t.check();
+    t.state.queued = new Set([3]);
+    t.at(T0 + 12 * 3_600_000);
+    await t.check();
+    t.state.queued = new Set(); // that attempt failed
+    t.at(T0 + 13 * 3_600_000);
+    await t.check();
+    t.state.queued = new Set([3]); // another one
+    t.at(T0 + DAY);
+    await t.check();
+    const item = t.status().due.find((i) => i.what === "Family Guy S01E01");
+    expect(item).toMatchObject({ firstSeen: new Date(T0).toISOString(), detail: "Downloading" });
+  });
+
   it("forgets a problem once it's gone, and starts again if it comes back", async () => {
     const t = setup();
     await t.check();
-    t.state.missing = [episode(2, "Show", 2)];
-    t.state.queued = new Set([3]); // the better copy is downloading
-    t.state.queue = [];
-    t.at(T0 + 15 * DAY);
+    t.state.replace = []; // replaced
+    t.at(T0 + DAY);
     await t.check();
-    expect(
-      t
-        .status()
-        .due.map((i) => i.what)
-        .sort(),
-    ).toEqual(["Indexers unavailable due to failures: LimeTorrents", "Show S01E02"]);
-    t.state.queued = new Set();
+    expect(t.store.items().some((i) => i.kind === "replace")).toBe(false);
+    t.state.replace = [episode(3, "Family Guy", 1)];
     await t.check();
     const back = t.store.items().find((i) => i.what === "Family Guy S01E01");
-    expect(back?.firstSeen).toBe(new Date(T0 + 15 * DAY).toISOString());
+    expect(back?.firstSeen).toBe(new Date(T0 + DAY).toISOString());
+  });
+
+  it("only counts a film once it's out at home, not just in cinemas", async () => {
+    const t = setup();
+    t.state.missing = [
+      { ...episode(7, "In Cinemas (2026)", 1), what: "In Cinemas (2026)", homeRelease: null },
+      {
+        ...episode(8, "Out (2026)", 1),
+        what: "Out (2026)",
+        homeRelease: "2026-11-01T00:00:00Z",
+      },
+    ];
+    await t.check();
+    expect(
+      t.store
+        .items()
+        .filter((i) => i.kind === "not-found")
+        .map((i) => i.what),
+    ).toEqual(["Out (2026)"]);
   });
 
   it("keeps what it knew when a source can't be read, and says so", async () => {
     const t = setup();
     await t.check();
     t.state.sonarrDown = true;
-    t.at(T0 + 15 * DAY);
+    t.at(T0 + DAY);
     const { errors } = await t.check();
     expect(errors).toEqual(["Sonarr wanted list: Nothing is listening"]);
     expect(t.status().due.filter((i) => i.kind === "not-found")).toHaveLength(2);
@@ -164,9 +203,9 @@ describe("needs a look", () => {
     t.state.queue = [];
     t.state.health = [];
     await t.check();
-    t.at(T0 + 15 * DAY);
+    t.at(T0 + DAY);
     expect(summaryLines(t.status())[1]).toBe(
-      "• Not found after 14+ days: Show 0 (1 episode), Show 1 (1 episode), Show 2 (1 episode), Show 3 (1 episode) and 3 more",
+      "• Not found or not finished after a day: Show 0 (1 episode), Show 1 (1 episode), Show 2 (1 episode), Show 3 (1 episode) and 3 more",
     );
   });
 });
@@ -182,7 +221,7 @@ describe("Sonarr/Radarr queue and health", () => {
     return c;
   }
 
-  it("lists only downloads that can't be imported on their own", async () => {
+  it("lists downloads that can't be imported, or aren't moving", async () => {
     const c = client({
       "/queue": {
         records: [
@@ -207,6 +246,16 @@ describe("Sonarr/Radarr queue and health", () => {
             trackedDownloadStatus: "ok",
             trackedDownloadState: "importPending",
           },
+          {
+            id: 4,
+            title: "Old.Show.S01E03.TL",
+            status: "warning",
+            trackedDownloadStatus: "ok",
+            trackedDownloadState: "downloading",
+            errorMessage: "The download is stalled with no connections",
+            series: { title: "Old Show" },
+            episode: { seasonNumber: 1, episodeNumber: 3 },
+          },
         ],
       },
     });
@@ -216,8 +265,22 @@ describe("Sonarr/Radarr queue and health", () => {
         what: "Show S01E02",
         release: "Show.S01E02.1080p",
         problem: "Unable to match the episode",
+        stalled: false,
       },
-      { id: 3, what: "Unknown.Thing", release: "Unknown.Thing", problem: "importPending" },
+      {
+        id: 3,
+        what: "Unknown.Thing",
+        release: "Unknown.Thing",
+        problem: "importPending",
+        stalled: false,
+      },
+      {
+        id: 4,
+        what: "Old Show S01E03",
+        release: "Old.Show.S01E03.TL",
+        problem: "The download is stalled with no connections",
+        stalled: true,
+      },
     ]);
   });
 
@@ -251,5 +314,31 @@ describe("pinging a service", () => {
       await new Promise((resolve) => server.close(resolve));
     }
     await expect(ping(`http://127.0.0.1:${port}/`)).rejects.toThrow("127.0.0.1");
+  });
+});
+
+describe("a film's home release", () => {
+  it("is the earliest digital or disc date that has passed", async () => {
+    const c = new ArrClient("radarr", {} as SettingsStore);
+    c.get = async <T>() =>
+      ({
+        totalRecords: 3,
+        records: [
+          { id: 1, title: "Cinema Only", year: 2026, digitalRelease: "2999-01-01T00:00:00Z" },
+          {
+            id: 2,
+            title: "Out",
+            year: 2026,
+            digitalRelease: "2026-02-01T00:00:00Z",
+            physicalRelease: "2026-01-15T00:00:00Z",
+          },
+          { id: 3, title: "No Dates", year: 2026 },
+        ],
+      }) as T;
+    expect((await c.missing()).map((i) => [i.what, i.homeRelease])).toEqual([
+      ["Cinema Only (2026)", null],
+      ["Out (2026)", "2026-01-15T00:00:00Z"],
+      ["No Dates (2026)", null],
+    ]);
   });
 });

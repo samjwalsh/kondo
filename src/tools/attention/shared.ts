@@ -3,11 +3,13 @@
 /**
  * - `not-found`: monitored, aired/available, no file, not downloading.
  * - `replace`: has a file Sonarr/Radarr would replace (below its custom format cutoff, e.g. a dub).
+ * - `stalled`: a download that isn't getting anywhere (no peers, no file list), including
+ *   private-tracker ones Kondo's Downloads tool leaves alone.
  * - `import`: a download Sonarr/Radarr can't import on their own.
  * - `health`: one of Sonarr/Radarr's own health warnings.
  * - `service`: Bazarr or Seerr not answering.
  */
-export type AttentionKind = "not-found" | "replace" | "import" | "health" | "service";
+export type AttentionKind = "not-found" | "replace" | "stalled" | "import" | "health" | "service";
 
 export interface AttentionItem {
   key: string;

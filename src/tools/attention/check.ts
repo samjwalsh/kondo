@@ -57,9 +57,14 @@ export async function runCheck(deps: CheckDeps): Promise<{ errors: string[] }> {
   for (const arr of deps.arrs) {
     if (!arr.configured()) continue;
     await source(`${arr.app}:wanted`, `${arr.name} wanted list`, async () => {
+      // Items being downloaded stay on the list: a download that never finishes, or one that
+      // fails and is replaced by another attempt, mustn't restart the clock.
       const queued = await arr.queuedIds();
-      const missing = (await arr.missing()).filter((i) => !queued.has(i.id));
-      const replace = (await arr.belowFormatCutoff()).filter((i) => !queued.has(i.id));
+      const detail = (id: number) => (queued.has(id) ? "Downloading" : null);
+      // A film counts as available once it's in cinemas, but there's nothing to download until
+      // its digital or disc release.
+      const missing = (await arr.missing()).filter((i) => i.homeRelease !== null);
+      const replace = await arr.belowFormatCutoff();
       return [
         ...missing.map((i) => ({
           id: `missing:${i.id}`,
@@ -67,6 +72,7 @@ export async function runCheck(deps: CheckDeps): Promise<{ errors: string[] }> {
           app: arr.app,
           group: i.title,
           what: i.what,
+          detail: detail(i.id),
         })),
         ...replace.map((i) => ({
           id: `replace:${i.id}`,
@@ -74,13 +80,14 @@ export async function runCheck(deps: CheckDeps): Promise<{ errors: string[] }> {
           app: arr.app,
           group: i.title,
           what: i.what,
+          detail: detail(i.id),
         })),
       ];
     });
     await source(`${arr.app}:queue`, `${arr.name} queue`, async () =>
       (await arr.queueProblems()).map((q) => ({
         id: String(q.id),
-        kind: "import" as const,
+        kind: q.stalled ? ("stalled" as const) : ("import" as const),
         app: arr.app,
         group: q.what,
         what: q.what,
@@ -141,7 +148,9 @@ export function isDue(
   now: number,
 ): boolean {
   const age = now - Date.parse(item.firstSeen);
-  if (item.kind === "not-found" || item.kind === "replace")
+  // Kondo's Downloads tool clears stuck public downloads within hours; what's left after the
+  // longer wait is one it won't touch (a private tracker) or keeps coming back.
+  if (item.kind === "not-found" || item.kind === "replace" || item.kind === "stalled")
     return age >= limits.stuckDays * 24 * HOUR;
   if (item.kind === "service") return age >= SERVICE_GRACE_MS;
   return age >= limits.stuckHours * HOUR;
@@ -186,6 +195,8 @@ function byGroup(items: AttentionItem[], noun: [string, string]): string[] {
 
 const clip = (text: string, max = 110) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
+const days = (n: number) => (n === 1 ? "a day" : `${n} days`);
+
 /** The "Needs a look" lines of the morning summary; none on a quiet day. */
 export function summaryLines(status: AttentionStatus): string[] {
   const due = status.due;
@@ -195,13 +206,22 @@ export function summaryLines(status: AttentionStatus): string[] {
   const notFound = of("not-found");
   if (notFound.length > 0) {
     lines.push(
-      `• Not found after ${status.stuckDays}+ days: ${shortList(byGroup(notFound, ["episode", "episodes"]))}`,
+      `• Not found or not finished after ${days(status.stuckDays)}: ${shortList(byGroup(notFound, ["episode", "episodes"]))}`,
     );
   }
   const replace = of("replace");
   if (replace.length > 0) {
     lines.push(
-      `• Still waiting for a better copy (e.g. not just a dub) after ${status.stuckDays}+ days: ${shortList(byGroup(replace, ["episode", "episodes"]))}`,
+      `• Still waiting for a better copy (e.g. not just a dub) after ${days(status.stuckDays)}: ${shortList(byGroup(replace, ["episode", "episodes"]))}`,
+    );
+  }
+  const stalled = of("stalled");
+  if (stalled.length > 0) {
+    lines.push(
+      `• Download stuck for ${days(status.stuckDays)}: ${shortList(
+        stalled.map((i) => `${i.what} (${clip(i.detail ?? "", 60)})`),
+        3,
+      )}`,
     );
   }
   const imports = of("import");

@@ -387,11 +387,22 @@ when it was first seen. It reports a problem only once it has lasted:
 
 | Problem | Source | Reported after |
 |---|---|---|
-| Monitored episode/movie still missing (not downloading) | Sonarr/Radarr wanted list | 14 days |
-| File Sonarr/Radarr would replace (below its custom format cutoff, e.g. only a dub) | same as the Missing tool | 14 days |
-| Download Sonarr/Radarr can't import on their own (import blocked or pending, warning or error) | their queue | 6 hours |
+| Monitored episode/movie still missing, **including while it downloads** | Sonarr/Radarr wanted list | 1 day |
+| File Sonarr/Radarr would replace (below its custom format cutoff, e.g. only a dub), including while a replacement downloads | same as the Missing tool | 1 day |
+| Download that isn't moving ("stalled with no connections", "downloading metadata") | their queue | 1 day |
+| Finished download Sonarr/Radarr can't import on their own (blocked or pending, warning or error) | their queue | 6 hours |
 | Sonarr/Radarr health warning or error (minus an ignore list) | their `/health` | 6 hours |
 | Bazarr or Seerr not answering (any HTTP answer below 500 counts as up) | their address | 1 hour |
+
+Why a day: anything that can sort itself out does so well within it. A new episode turns up
+within hours (RSS plus the 2-hour delay profile), and Kondo's Downloads tool clears a stuck
+public download within 6 hours, after which Sonarr/Radarr try another release. What's left after
+a day is a stuck private-tracker download (the Downloads tool never touches those), a release
+that doesn't exist, or a loop of attempts that keep failing. A download in progress doesn't
+stop the clock, so stall → fail → another attempt → stall still gets reported. Films only count
+from their digital or disc release: Seerr adds them with "in cinemas" availability, and nothing
+can be downloaded before then. (The Missing tool searches 20 items a day, so while it has a
+backlog, an item can be reported before its turn comes.)
 
 A problem that goes away is forgotten, and starts its clock again if it comes back. If a source
 can't be read, what was known about it stays as it was and the page says so. Reported problems
