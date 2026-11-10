@@ -190,8 +190,18 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
   library (Oct 2026, medium preset): CRF 25, files 28 % smaller than NVENC's, about
   2× real time. The job has no page of its own (it's a one-off); it can be run
   again with `POST /api/tools/transcode/calibration`.
-- Each encoder has at most one file queued, so files go to whichever frees up
-  first; when both are free the CPU gets the biggest saving.
+- Each encoder has at most one file queued. The CPU takes the biggest saving.
+- **The GPU only helps with a long backlog** (Nov 2026). Once the backlog was done, new files
+  arrive at about 3 a day, which the CPU alone handles easily, yet NVENC took a third of them
+  and its files came out about twice the size of x265's (This Is Going to Hurt S01, split
+  between both). Encoding sooner frees no space either: the original stays hardlinked to its
+  seeding torrent. So the GPU takes files only while the CPU alone would need more than
+  **72 hours** of encoding (`encoding.gpuBacklogHours`; 0 = always). That is the running time
+  of everything still to encode divided by the CPU's speed, the median of its last 20 results
+  (2.1× real time on this host; 2× until measured). It then takes the **smallest** savings, and
+  stops by itself once the backlog drops under the threshold. 72 CPU hours is about 150 hours
+  of video (roughly 200 episodes or 75 films), and about 3–5 days of real time with the night
+  window plus idle mode, well inside the 11-day private-tracker seeding period.
 - **Re-encode thresholds** for files that are already H.265/AV1 (video bitrate):
 
   | Resolution | Re-encode above | Why |

@@ -157,6 +157,9 @@ const activeJob = (
   AND j.state IN ('queued', 'running', 'paused'))`;
 const ACTIVE_ENCODE = activeJob("transcode:encode:");
 const ACTIVE_SWAP = activeJob("transcode:swap:");
+/** Marked for transcoding and either never tried or failed once (`f` files, `o` outcomes). */
+const TO_ENCODE =
+  "f.decision = 'transcode' AND (o.file_id IS NULL OR (o.status = 'failed' AND o.attempts < 2))";
 
 /** Where a swap is copying to and replacing, recorded before anything in the library changes. */
 export interface SwapPaths {
@@ -834,16 +837,52 @@ export class LibraryStore {
    * The next files to encode: marked for transcoding, not already queued, and either never
    * tried or failed once. Biggest saving first.
    */
-  nextCandidates(limit: number): { id: number; path: string }[] {
+  nextCandidates(
+    limit: number,
+    order: "biggest" | "smallest" = "biggest",
+  ): { id: number; path: string }[] {
     return this.db
       .prepare(
         `SELECT f.id, f.path FROM transcode_files f LEFT JOIN transcode_outcomes o ON o.file_id = f.id
-         WHERE f.decision = 'transcode' AND (o.file_id IS NULL OR (o.status = 'failed' AND o.attempts < 2))
-           AND NOT ${ACTIVE_ENCODE}
-         ORDER BY (f.size - COALESCE(f.est_bytes, f.size)) DESC LIMIT ?`,
+         WHERE ${TO_ENCODE} AND NOT ${ACTIVE_ENCODE}
+         ORDER BY (f.size - COALESCE(f.est_bytes, f.size)) ${order === "biggest" ? "DESC" : "ASC"} LIMIT ?`,
       )
       .all(limit)
       .map((r) => ({ id: Number(r.id), path: String(r.path) }));
+  }
+
+  /** Running time (seconds) of every file still to encode, including ones queued or encoding. */
+  backlogSeconds(): number {
+    const row = this.db
+      .prepare(
+        `SELECT SUM(COALESCE(json_extract(f.probe, '$.format.duration'), 0)) AS s
+         FROM transcode_files f LEFT JOIN transcode_outcomes o ON o.file_id = f.id
+         WHERE ${TO_ENCODE}`,
+      )
+      .get();
+    return Number(row?.s ?? 0);
+  }
+
+  /**
+   * The CPU encoder's recent speed as a multiple of real time: the median over its last 20
+   * swapped-in results (the median shrugs off encodes that sat paused while Plex was busy).
+   */
+  cpuSpeed(): number | null {
+    const speeds = this.db
+      .prepare(
+        `SELECT json_extract(f.probe, '$.format.duration') AS d, json_extract(h.details, '$.encodeSeconds') AS s
+         FROM transcode_history h JOIN transcode_files f ON f.id = h.file_id
+         WHERE h.encoder LIKE 'libx265%' ORDER BY h.id DESC LIMIT 20`,
+      )
+      .all()
+      .map((r) => Number(r.d) / Number(r.s))
+      .filter((speed) => Number.isFinite(speed) && speed > 0)
+      .sort((a, b) => a - b);
+    if (speeds.length === 0) return null;
+    const mid = Math.floor(speeds.length / 2);
+    return speeds.length % 2
+      ? (speeds[mid] as number)
+      : ((speeds[mid - 1] as number) + (speeds[mid] as number)) / 2;
   }
 
   startScan(): number {

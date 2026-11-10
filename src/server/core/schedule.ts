@@ -53,6 +53,15 @@ export const encodingSettings: SettingsSection = {
   group: "core",
   fields: [
     { key: "gpuEnabled", label: "Use the GPU slot", type: "boolean", default: true },
+    {
+      key: "gpuBacklogHours",
+      label: "Use the GPU only when the CPU has more than this much work (hours)",
+      type: "number",
+      default: 72,
+      min: 0,
+      max: 720,
+      help: "The CPU makes smaller files at the same quality, so the GPU only helps out with big batches, taking the files with the smallest savings. Measured in hours of CPU encoding at its recent speed. 0 = always use the GPU.",
+    },
     { key: "cpuEnabled", label: "Use the CPU slot", type: "boolean", default: true },
     {
       key: "cpuCrf",
