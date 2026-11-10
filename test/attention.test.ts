@@ -1,0 +1,255 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { describe, expect, it } from "vitest";
+import { coreMigrations, migrate, openDb } from "../src/server/core/db.js";
+import type { SettingsStore } from "../src/server/core/settings.js";
+import { ArrClient, type MissingItem } from "../src/server/integrations/arr.js";
+import { attentionStatus, ping, runCheck, summaryLines } from "../src/tools/attention/check.js";
+import { AttentionStore, migrations } from "../src/tools/attention/store.js";
+import { tempDir } from "./helpers.js";
+
+const DAY = 86_400_000;
+const T0 = Date.parse("2026-11-10T12:00:00Z");
+const LIMITS = { stuckDays: 14, stuckHours: 6 };
+
+const episode = (id: number, title: string, n: number): MissingItem => ({
+  id,
+  what: `${title} S01E0${n}`,
+  title,
+  lastSearchTime: null,
+});
+
+function setup() {
+  const db = openDb(tempDir());
+  migrate(db, "core", coreMigrations);
+  migrate(db, "tool:attention", migrations);
+  const store = new AttentionStore(db);
+  const state = {
+    missing: [episode(1, "Show", 1), episode(2, "Show", 2)] as MissingItem[],
+    replace: [episode(3, "Family Guy", 1)] as MissingItem[],
+    queued: new Set<number>(),
+    queue: [{ id: 50, what: "Other S02E01", release: "x", problem: "Unable to match" }],
+    health: [
+      { source: "AllowedHostsCheck", message: "Allowed Hosts is not configured" },
+      {
+        source: "IndexerStatusCheck",
+        message: "Indexers unavailable due to failures: LimeTorrents",
+      },
+    ],
+    sonarrDown: false,
+    bazarrDown: false,
+  };
+  const sonarr = {
+    app: "sonarr" as const,
+    name: "Sonarr",
+    configured: () => true,
+    missing: async () => {
+      if (state.sonarrDown) throw new Error("Nothing is listening");
+      return state.missing;
+    },
+    belowFormatCutoff: async () => state.replace,
+    queuedIds: async () => state.queued,
+    queueProblems: async () => state.queue,
+    healthIssues: async () => state.health,
+  };
+  let now = T0;
+  const check = () =>
+    runCheck({
+      store,
+      arrs: [sonarr],
+      ignoreHealth: ["AllowedHostsCheck"],
+      services: [
+        { app: "bazarr", name: "Bazarr", url: "http://bazarr" },
+        { app: "seerr", name: "Seerr", url: "" },
+      ],
+      ping: async () => {
+        if (state.bazarrDown) throw new Error("Nothing is listening at bazarr");
+      },
+      now: () => now,
+    });
+  return {
+    store,
+    state,
+    check,
+    at: (ms: number) => {
+      now = ms;
+    },
+    status: () => attentionStatus(store, LIMITS, now),
+  };
+}
+
+describe("needs a look", () => {
+  it("stays quiet about problems that haven't lasted", async () => {
+    const t = setup();
+    await t.check();
+    const s = t.status();
+    expect(s.due).toEqual([]);
+    expect(s.watching).toBe(5); // 2 missing, 1 to replace, 1 queue problem, 1 health warning
+    expect(summaryLines(s)).toEqual([]);
+  });
+
+  it("reports what has lasted, keeping the first time it was seen", async () => {
+    const t = setup();
+    await t.check();
+    t.at(T0 + 7 * 3_600_000);
+    await t.check();
+    expect(
+      t
+        .status()
+        .due.map((i) => i.kind)
+        .sort(),
+    ).toEqual(["health", "import"]);
+
+    t.at(T0 + 15 * DAY);
+    await t.check();
+    expect(summaryLines(t.status())).toEqual([
+      "Needs a look:",
+      "• Not found after 14+ days: Show (2 episodes)",
+      "• Still waiting for a better copy (e.g. not just a dub) after 14+ days: Family Guy (1 episode)",
+      "• Stuck in the download queue for 6+ h: Other S02E01 (Sonarr: Unable to match)",
+      "• Sonarr: Indexers unavailable due to failures: LimeTorrents",
+    ]);
+  });
+
+  it("forgets a problem once it's gone, and starts again if it comes back", async () => {
+    const t = setup();
+    await t.check();
+    t.state.missing = [episode(2, "Show", 2)];
+    t.state.queued = new Set([3]); // the better copy is downloading
+    t.state.queue = [];
+    t.at(T0 + 15 * DAY);
+    await t.check();
+    expect(
+      t
+        .status()
+        .due.map((i) => i.what)
+        .sort(),
+    ).toEqual(["Indexers unavailable due to failures: LimeTorrents", "Show S01E02"]);
+    t.state.queued = new Set();
+    await t.check();
+    const back = t.store.items().find((i) => i.what === "Family Guy S01E01");
+    expect(back?.firstSeen).toBe(new Date(T0 + 15 * DAY).toISOString());
+  });
+
+  it("keeps what it knew when a source can't be read, and says so", async () => {
+    const t = setup();
+    await t.check();
+    t.state.sonarrDown = true;
+    t.at(T0 + 15 * DAY);
+    const { errors } = await t.check();
+    expect(errors).toEqual(["Sonarr wanted list: Nothing is listening"]);
+    expect(t.status().due.filter((i) => i.kind === "not-found")).toHaveLength(2);
+    expect(t.status().errors).toEqual(errors);
+  });
+
+  it("reports a service only after it's been down for an hour", async () => {
+    const t = setup();
+    t.state.bazarrDown = true;
+    await t.check();
+    expect(t.status().due.filter((i) => i.kind === "service")).toEqual([]);
+    t.at(T0 + 3_600_000);
+    await t.check();
+    expect(summaryLines(t.status())).toContain(
+      "• Bazarr isn't answering (Nothing is listening at bazarr)",
+    );
+    t.state.bazarrDown = false;
+    await t.check();
+    expect(t.store.items().filter((i) => i.kind === "service")).toEqual([]);
+  });
+
+  it("shortens long lists", async () => {
+    const t = setup();
+    t.state.missing = Array.from({ length: 7 }, (_, i) => episode(100 + i, `Show ${i}`, 1));
+    t.state.replace = [];
+    t.state.queue = [];
+    t.state.health = [];
+    await t.check();
+    t.at(T0 + 15 * DAY);
+    expect(summaryLines(t.status())[1]).toBe(
+      "• Not found after 14+ days: Show 0 (1 episode), Show 1 (1 episode), Show 2 (1 episode), Show 3 (1 episode) and 3 more",
+    );
+  });
+});
+
+describe("Sonarr/Radarr queue and health", () => {
+  function client(routes: Record<string, unknown>) {
+    const c = new ArrClient("sonarr", {} as SettingsStore);
+    c.get = async <T>(path: string) => {
+      const key = Object.keys(routes).find((k) => path.startsWith(k));
+      if (!key) throw new Error(`unexpected ${path}`);
+      return routes[key] as T;
+    };
+    return c;
+  }
+
+  it("lists only downloads that can't be imported on their own", async () => {
+    const c = client({
+      "/queue": {
+        records: [
+          {
+            id: 1,
+            title: "fine",
+            trackedDownloadStatus: "ok",
+            trackedDownloadState: "downloading",
+          },
+          {
+            id: 2,
+            title: "Show.S01E02.1080p",
+            trackedDownloadStatus: "warning",
+            trackedDownloadState: "importBlocked",
+            statusMessages: [{ title: "x", messages: ["Unable to match the episode"] }],
+            series: { title: "Show" },
+            episode: { seasonNumber: 1, episodeNumber: 2 },
+          },
+          {
+            id: 3,
+            title: "Unknown.Thing",
+            trackedDownloadStatus: "ok",
+            trackedDownloadState: "importPending",
+          },
+        ],
+      },
+    });
+    expect(await c.queueProblems()).toEqual([
+      {
+        id: 2,
+        what: "Show S01E02",
+        release: "Show.S01E02.1080p",
+        problem: "Unable to match the episode",
+      },
+      { id: 3, what: "Unknown.Thing", release: "Unknown.Thing", problem: "importPending" },
+    ]);
+  });
+
+  it("keeps warnings and errors from the health page", async () => {
+    const c = client({
+      "/health": [
+        { source: "A", type: "notice", message: "n" },
+        { source: "B", type: "warning", message: "w" },
+        { source: "C", type: "error", message: "e" },
+      ],
+    });
+    expect(await c.healthIssues()).toEqual([
+      { source: "B", message: "w" },
+      { source: "C", message: "e" },
+    ]);
+  });
+});
+
+describe("pinging a service", () => {
+  it("counts any answer below 500 as up, and no answer or a 5xx as down", async () => {
+    const server = createServer((request, response) => {
+      response.statusCode = request.url === "/broken" ? 503 : 401;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      await expect(ping(`http://127.0.0.1:${port}/`)).resolves.toBeUndefined();
+      await expect(ping(`http://127.0.0.1:${port}/broken`)).rejects.toThrow("HTTP 503");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    await expect(ping(`http://127.0.0.1:${port}/`)).rejects.toThrow("127.0.0.1");
+  });
+});

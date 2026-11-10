@@ -55,6 +55,8 @@ export interface MissingItem {
   id: number;
   /** e.g. "NCIS S24E04" or "Wind River (2017)". */
   what: string;
+  /** The series or movie it belongs to, e.g. "NCIS" or "Wind River (2017)". */
+  title: string;
   /** When Sonarr/Radarr last searched for it, if ever. */
   lastSearchTime: string | null;
 }
@@ -69,6 +71,29 @@ interface RawMissing {
   lastSearchTime?: string | null;
   /** Radarr: released enough for its minimum availability. */
   isAvailable?: boolean;
+}
+
+/** A download Sonarr/Radarr can't finish on their own. */
+export interface QueueProblem {
+  /** Queue item id. */
+  id: number;
+  /** e.g. "NCIS S24E04" or "Wind River (2017)". */
+  what: string;
+  /** The release name. */
+  release: string;
+  problem: string;
+}
+
+interface RawQueue {
+  id: number;
+  title?: string;
+  trackedDownloadStatus?: string;
+  trackedDownloadState?: string;
+  statusMessages?: { title?: string; messages?: string[] }[];
+  errorMessage?: string;
+  series?: { title: string };
+  episode?: { seasonNumber: number; episodeNumber: number };
+  movie?: { title: string; year?: number };
 }
 
 interface RawProfile {
@@ -199,12 +224,14 @@ export class ArrClient {
       const records = result.records ?? [];
       for (const r of records) {
         if (this.app === "radarr" && r.isAvailable === false) continue;
+        const movie = `${r.title ?? `#${r.id}`}${r.year ? ` (${r.year})` : ""}`;
         items.push({
           id: r.id,
           what:
             this.app === "sonarr" && r.series
               ? episodeName(r.series.title, r.seasonNumber ?? 0, r.episodeNumber ?? 0)
-              : `${r.title ?? `#${r.id}`}${r.year ? ` (${r.year})` : ""}`,
+              : movie,
+          title: this.app === "sonarr" && r.series ? r.series.title : movie,
           lastSearchTime: r.lastSearchTime ?? null,
         });
       }
@@ -252,9 +279,11 @@ export class ArrClient {
         )) {
           const m = batch.get(file.movieId);
           if (!m || !below(file, m.qualityProfileId)) continue;
+          const title = `${m.title}${m.year ? ` (${m.year})` : ""}`;
           items.push({
             id: m.id,
-            what: `${m.title}${m.year ? ` (${m.year})` : ""}${why(file)}`,
+            what: `${title}${why(file)}`,
+            title,
             // Radarr's movie list doesn't say; the Missing tool remembers its own searches.
             lastSearchTime: null,
           });
@@ -276,11 +305,52 @@ export class ArrClient {
         items.push({
           id: e.id,
           what: `${episodeName(series.title, e.seasonNumber, e.episodeNumber)}${why(file)}`,
+          title: series.title,
           lastSearchTime: e.lastSearchTime ?? null,
         });
       }
     }
     return items;
+  }
+
+  /**
+   * Downloads Sonarr/Radarr can't finish on their own: import blocked or pending, or flagged with
+   * a warning or error (e.g. "Unable to match", "manual import required").
+   */
+  async queueProblems(): Promise<QueueProblem[]> {
+    const page = await this.get<{ records?: RawQueue[] }>(
+      `/queue?pageSize=1000&includeUnknownSeriesItems=true&${
+        this.app === "sonarr" ? "includeSeries=true&includeEpisode=true" : "includeMovie=true"
+      }`,
+    );
+    const out: QueueProblem[] = [];
+    for (const r of page.records ?? []) {
+      const state = r.trackedDownloadState ?? "";
+      const flagged = r.trackedDownloadStatus === "warning" || r.trackedDownloadStatus === "error";
+      if (!flagged && !["importBlocked", "importPending", "failedPending"].includes(state))
+        continue;
+      const messages = (r.statusMessages ?? []).flatMap((m) => m.messages ?? []);
+      const what =
+        r.series && r.episode
+          ? episodeName(r.series.title, r.episode.seasonNumber, r.episode.episodeNumber)
+          : r.movie
+            ? `${r.movie.title}${r.movie.year ? ` (${r.movie.year})` : ""}`
+            : (r.title ?? `#${r.id}`);
+      out.push({
+        id: r.id,
+        what,
+        release: r.title ?? "",
+        problem: messages[0] ?? r.errorMessage ?? state,
+      });
+    }
+    return out;
+  }
+
+  /** Sonarr/Radarr's own health warnings and errors (System → Status). */
+  async healthIssues(): Promise<{ source: string; message: string }[]> {
+    return (await this.get<{ source: string; type: string; message: string }[]>("/health"))
+      .filter((h) => h.type === "warning" || h.type === "error")
+      .map(({ source, message }) => ({ source, message }));
   }
 
   /** Episode (Sonarr) or movie (Radarr) ids that already have a download in the queue. */

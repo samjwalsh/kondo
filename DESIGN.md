@@ -378,6 +378,27 @@ seeder count (fake swarms report plenty of seeders anyway), or rejecting the `RA
 (it closed in 2023, so new releases with its name are fake, but its genuine old releases are
 common).
 
+## Needs a look
+
+Kondo's alerts cover things that break: a service not answering, a job making no progress, a
+missed night window, a full disk. They don't cover things that never break but never sort
+themselves out either. The "Needs a look" tool checks every hour and records each problem with
+when it was first seen. It reports a problem only once it has lasted:
+
+| Problem | Source | Reported after |
+|---|---|---|
+| Monitored episode/movie still missing (not downloading) | Sonarr/Radarr wanted list | 14 days |
+| File Sonarr/Radarr would replace (below its custom format cutoff, e.g. only a dub) | same as the Missing tool | 14 days |
+| Download Sonarr/Radarr can't import on their own (import blocked or pending, warning or error) | their queue | 6 hours |
+| Sonarr/Radarr health warning or error (minus an ignore list) | their `/health` | 6 hours |
+| Bazarr or Seerr not answering (any HTTP answer below 500 counts as up) | their address | 1 hour |
+
+A problem that goes away is forgotten, and starts its clock again if it comes back. If a source
+can't be read, what was known about it stays as it was and the page says so. Reported problems
+lead the morning summary under "Needs a look:", one line per kind, grouped by series and shortened
+("and 3 more"); on a quiet day there are no lines at all. The dashboard card turns amber while
+anything is due, and the page lists everything being watched.
+
 ## Missing tool (search again)
 
 Sonarr and Radarr search for a missing episode or movie only when it's added, when a download
