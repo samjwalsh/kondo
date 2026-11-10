@@ -12,21 +12,21 @@ export const attentionSettings: SettingsSection = {
   fields: [
     {
       key: "stuckDays",
-      label: "Report missing items and files to replace after (days)",
+      label: "Report missing items, files to replace and stuck downloads after (days)",
       type: "number",
-      default: 14,
+      default: 1,
       min: 1,
       max: 365,
-      help: "How long an episode or movie can stay missing, or stuck with a file Sonarr/Radarr would replace (e.g. only a dub), while Kondo keeps searching.",
+      help: "How long an episode or movie can stay missing or downloading, stuck with a file Sonarr/Radarr would replace (e.g. only a dub), or sit in a download that isn't moving. Films only count from their digital or disc release.",
     },
     {
       key: "stuckHours",
-      label: "Report stuck downloads and health warnings after (hours)",
+      label: "Report failed imports and health warnings after (hours)",
       type: "number",
       default: 6,
       min: 1,
       max: 168,
-      help: "Downloads Sonarr/Radarr can't import on their own, and their own health warnings.",
+      help: "Finished downloads Sonarr/Radarr can't import on their own, and their own health warnings.",
     },
     {
       key: "ignoreHealth",

@@ -9,6 +9,7 @@ import type { AttentionItem, AttentionKind, AttentionStatus } from "./shared.js"
 const KIND_LABELS: Record<AttentionKind, string> = {
   "not-found": "Never found",
   replace: "Waiting for a better copy",
+  stalled: "Download not moving",
   import: "Stuck in the download queue",
   health: "Sonarr/Radarr warnings",
   service: "Not answering",
@@ -48,8 +49,9 @@ export function AttentionPage() {
       </div>
       <p className="muted">
         Things that don't fail loudly but never sort themselves out. Kondo checks every hour and
-        reports only problems that have lasted (missing items after {s?.stuckDays ?? 14} days, stuck
-        downloads and warnings after {s?.stuckHours ?? 6} hours), at the top of the morning summary.
+        reports only problems that have lasted (missing items and stuck downloads after{" "}
+        {s?.stuckDays ?? 1} day(s), failed imports and warnings after {s?.stuckHours ?? 6} hours),
+        at the top of the morning summary.
       </p>
       {message && <p className="muted small">{message}</p>}
       {s && (
