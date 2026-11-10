@@ -394,6 +394,17 @@ hammering the indexers. The time of the last run is kept in the database and che
 the dashboard card and the morning summary. `GET /api/tools/missing/preview` shows what the
 next run would search for.
 
+**Files to replace** (Nov 2026, on by default). A Sonarr/Radarr profile can score custom
+formats so a file is worth replacing: here "No English or original audio" scores -1000, upgrades
+are on and stop at score 0, so a dub-only file gets replaced by a better release. But their
+Cutoff Unmet list (and so their own searches) only counts quality, so nothing ever searches for
+these once the file is in. The Missing tool also lists monitored episodes/movies whose file
+scores below its profile's "upgrade until" score, in profiles that allow upgrades and score
+some custom format, and gives them turns with the missing items in the same budget. Radarr's
+movie list says neither the file's score (read from `/moviefile`, 100 movies a request) nor when
+a movie was last searched, so Kondo also keeps its own record of when it asked for each item and
+uses the later of the two.
+
 
 - **Dashboard**: one card per tool (health, what's running, next window, warnings).
 - **Transcode**: live queue (per slot, with progress and ETA) · awaiting approval ·

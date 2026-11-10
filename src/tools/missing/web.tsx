@@ -65,6 +65,8 @@ export function MissingPage() {
               <p>
                 Searches for up to <strong>{s.perRun}</strong> missing items in each of Sonarr and
                 Radarr, <strong>{every(s.everyHours)}</strong>.
+                {s.upgrades &&
+                  " Files Sonarr/Radarr would replace (e.g. a dub their profile penalises) take turns with them."}
               </p>
               <p className="muted small">
                 {s.lastRunAt ? `Last run ${ago(s.lastRunAt)}. ` : "Not run yet. "}
@@ -88,7 +90,9 @@ export function MissingPage() {
                     <strong>{APP[r.app]}</strong>
                   </span>
                   <span className="muted small">
-                    {r.error ? "failed" : `${r.missing} missing, searched ${r.searched.length}`}
+                    {r.error
+                      ? "failed"
+                      : `${r.missing} missing${r.upgrades > 0 ? `, ${r.upgrades} to replace` : ""}, searched ${r.searched.length}`}
                   </span>
                 </div>
                 <p className="muted small log-detail">
