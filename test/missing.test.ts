@@ -20,6 +20,7 @@ const job = {
 const item = (id: number, lastSearchTime: string | null): MissingItem => ({
   id,
   what: `Show S01E0${id}`,
+  title: "Show",
   lastSearchTime,
 });
 
@@ -148,7 +149,12 @@ describe("files Sonarr/Radarr would replace", () => {
       ],
     });
     expect(await c.belowFormatCutoff()).toEqual([
-      { id: 100, what: "Family Guy S16E01 (No English or original audio)", lastSearchTime: null },
+      {
+        id: 100,
+        what: "Family Guy S16E01 (No English or original audio)",
+        title: "Family Guy",
+        lastSearchTime: null,
+      },
     ]);
     // Series in profiles that can't upgrade aren't even looked at.
     expect(asked.filter((p) => p.startsWith("/episodefile"))).toEqual(["/episodefile?seriesId=1"]);
@@ -184,6 +190,7 @@ describe("files Sonarr/Radarr would replace", () => {
       {
         id: 1,
         what: "Dubbed (2020) (No English or original audio)",
+        title: "Dubbed (2020)",
         lastSearchTime: null,
       },
     ]);
