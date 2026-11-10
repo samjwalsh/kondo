@@ -161,6 +161,10 @@ const ACTIVE_SWAP = activeJob("transcode:swap:");
 const TO_ENCODE =
   "f.decision = 'transcode' AND (o.file_id IS NULL OR (o.status = 'failed' AND o.attempts < 2))";
 
+/** Marked for a remux; never tried (a Squish or not-worth-it result is about the video) or failed once. */
+const TO_REMUX =
+  "f.decision = 'remux' AND (o.file_id IS NULL OR o.status IN ('squish', 'not-worth-it') OR (o.status = 'failed' AND o.attempts < 2))";
+
 /** Where a swap is copying to and replacing, recorded before anything in the library changes. */
 export interface SwapPaths {
   source: string;
@@ -370,6 +374,7 @@ export class LibraryStore {
       files: 0,
       bytes: 0,
       toTranscode: { count: 0, bytes: 0, estimatedBytes: 0 },
+      toRemux: { count: 0, bytes: 0 },
       skipped: { count: 0, bytes: 0 },
       problems: 0,
       notYetRead: 0,
@@ -388,6 +393,9 @@ export class LibraryStore {
         out.toTranscode.count += n;
         out.toTranscode.bytes += bytes;
         out.toTranscode.estimatedBytes += Number(g.est);
+      } else if (decision === "remux") {
+        out.toRemux.count += n;
+        out.toRemux.bytes += bytes;
       } else if (decision === "skip") {
         out.skipped.count += n;
         out.skipped.bytes += bytes;
@@ -849,6 +857,28 @@ export class LibraryStore {
       )
       .all(limit)
       .map((r) => ({ id: Number(r.id), path: String(r.path) }));
+  }
+
+  /** The next file whose extra audio is to be removed (smallest first: they're quick). */
+  nextRemux(): { id: number; path: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT f.id, f.path FROM transcode_files f LEFT JOIN transcode_outcomes o ON o.file_id = f.id
+         WHERE ${TO_REMUX} AND NOT ${ACTIVE_ENCODE} ORDER BY f.size LIMIT 1`,
+      )
+      .get();
+    return row ? { id: Number(row.id), path: String(row.path) } : null;
+  }
+
+  /** Remux jobs queued, running or paused (they share the general slot, so one at a time). */
+  activeRemuxes(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM jobs WHERE dedupe_key LIKE 'transcode:encode:%' AND slot = 'general'
+         AND state IN ('queued', 'running', 'paused')`,
+      )
+      .get();
+    return Number(row?.n ?? 0);
   }
 
   /** Running time (seconds) of every file still to encode, including ones queued or encoding. */

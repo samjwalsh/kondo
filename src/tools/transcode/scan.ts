@@ -8,7 +8,13 @@ import { errorMessage } from "../../server/integrations/http.js";
 import { splitLines } from "../../shared/settings.js";
 import { languageFromName } from "./languages.js";
 import { extractMediaInfo, type Probe } from "./media.js";
-import { evaluate, outcomeOverride, type RuleSettings, squishOverride } from "./rules.js";
+import {
+  evaluate,
+  outcomeOverride,
+  type RuleSettings,
+  remuxOverride,
+  squishOverride,
+} from "./rules.js";
 import type { ArrMatch } from "./shared.js";
 import type { FoundFile, LibraryStore } from "./store.js";
 import { tempFileId } from "./swap.js";
@@ -294,10 +300,13 @@ export async function decideAll(
       const match = matchArr(row.path, row.root, arr);
       const info = row.probe ? extractMediaInfo(row.probe) : null;
       // A remembered result (not worth it, rejected, failed twice) wins over the rules.
-      const evaluation =
+      const original = match?.originalLanguage ?? null;
+      const decided =
         outcomeOverride(row.outcome) ??
         squishOverride(row.path, info) ??
-        evaluate(info, match?.originalLanguage ?? null, rules);
+        evaluate(info, original, rules);
+      // Not re-encoded, but other-language audio still to remove.
+      const evaluation = remuxOverride(decided, info, original) ?? decided;
       if (evaluation.decision === "transcode") toTranscode++;
       return { id: row.id, evaluation, arr: match, probe: row.probe };
     });

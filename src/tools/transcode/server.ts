@@ -123,7 +123,7 @@ export const transcodeSettings: SettingsSection = {
 /** How many recent swaps keep their comparison frames. */
 const RECENT_KEPT = 50;
 
-const FILTERS = new Set<FileFilter>(["transcode", "skip", "error", "all"]);
+const FILTERS = new Set<FileFilter>(["transcode", "remux", "skip", "error", "all"]);
 const SORTS = new Set<FileSort>(["saving", "size", "path"]);
 
 /** Tells Plex (one folder) and Sonarr/Radarr (one series/movie) to look again. Best effort. */
@@ -238,6 +238,18 @@ export default defineTool({
         Number(v.maxWaiting) -
         store.countOutcomes(["awaiting-approval", "approved", "swapping"]) -
         ctx.activeJobs("encode");
+      // Removing other-language audio: quick, and in the general slot, so one at a time.
+      if (free > 0 && store.activeRemuxes() === 0) {
+        const file = store.nextRemux();
+        if (file) {
+          ctx.enqueue<EncodePayload>(
+            "encode",
+            { fileId: file.id, name: path.basename(file.path), encoder: "remux" },
+            { dedupeKey: encodeKey(file.id) },
+          );
+          free--;
+        }
+      }
       for (const encoder of encoders) {
         if (free <= 0) return;
         if (store.queuedEncodes(encoder) > 0) continue;
@@ -347,8 +359,12 @@ export default defineTool({
     });
 
     ctx.defineJob<EncodePayload, EncodeResult>("encode", {
-      slot: (p) => p.encoder ?? "gpu",
-      title: (p) => `Transcode ${p.name}${p.encoder === "cpu" ? " (CPU)" : ""}`,
+      // A remux only copies, so it needs neither encoder.
+      slot: (p) => (p.encoder === "remux" ? "general" : (p.encoder ?? "gpu")),
+      title: (p) =>
+        p.encoder === "remux"
+          ? `Remove other-language audio from ${p.name}`
+          : `Transcode ${p.name}${p.encoder === "cpu" ? " (CPU)" : ""}`,
       run: (job) =>
         runEncode(job, {
           store,
@@ -375,7 +391,7 @@ export default defineTool({
           ? "paused"
           : mode === "off"
             ? "encoding is switched off"
-            : s.toTranscode.count === 0
+            : s.toTranscode.count === 0 && s.toRemux.count === 0
               ? "nothing left to do"
               : null,
       });
@@ -464,12 +480,16 @@ export default defineTool({
       app.post<{ Params: { id: string } }>("/files/:id/encode", async (request, reply) => {
         const file = store.detail(Number(request.params.id));
         if (!file) return reply.code(404).send({ error: "No such file" });
-        if (file.decision !== "transcode") {
+        if (file.decision !== "transcode" && file.decision !== "remux") {
           return reply.code(409).send({ error: "This file isn't marked for transcoding" });
         }
         const job = ctx.enqueue<EncodePayload>(
           "encode",
-          { fileId: file.id, name: path.basename(file.path) },
+          {
+            fileId: file.id,
+            name: path.basename(file.path),
+            ...(file.decision === "remux" ? { encoder: "remux" as const } : {}),
+          },
           { dedupeKey: encodeKey(file.id), force: true, priority: 10 },
         );
         return reply.code(202).send(job);
@@ -601,6 +621,11 @@ export default defineTool({
         `${s.files.toLocaleString("en-GB")} videos (${terabytes(s.bytes)})`,
         `${s.toTranscode.count.toLocaleString("en-GB")} to transcode · about ${terabytes(saving)} to save`,
       ];
+      if (s.toRemux.count > 0) {
+        lines.push(
+          `${s.toRemux.count.toLocaleString("en-GB")} with other-language audio to remove`,
+        );
+      }
       if (s.done.count > 0) {
         lines.push(
           `${s.done.count.toLocaleString("en-GB")} done · ${terabytes(s.done.savedBytes)} saved`,

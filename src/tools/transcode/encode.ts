@@ -18,13 +18,16 @@ export interface Crop {
   y: number;
 }
 
+export type Encoder = "gpu" | "cpu" | "remux";
+
 export interface EncodeOptions {
   source: string;
   output: string;
   info: MediaInfo;
   plan: Plan;
   crop: Crop | null;
-  encoder: "gpu" | "cpu";
+  /** `remux`: copy the video, only remove tracks. */
+  encoder: Encoder;
   cpuThreads: number;
   /** x265 speed preset; tests use a fast one. */
   cpuPreset?: string;
@@ -122,15 +125,20 @@ export function buildEncodeArgs(o: EncodeOptions): string[] {
   args.push("-map_metadata", "0", "-map_chapters", "0");
 
   // Video ------------------------------------------------------------------------
-  if (o.crop) args.push("-vf", `crop=${o.crop.width}:${o.crop.height}:${o.crop.x}:${o.crop.y}`);
-  args.push(...videoArgs(o.encoder, tenBit, o));
+  if (o.encoder === "remux") {
+    args.push("-c:v", "copy");
+  } else {
+    if (o.crop) args.push("-vf", `crop=${o.crop.width}:${o.crop.height}:${o.crop.x}:${o.crop.y}`);
+    args.push(...videoArgs(o.encoder, tenBit, o));
+  }
   args.push("-disposition:v:0", "default", ...clearStatistics("v:0"));
 
   // Audio --------------------------------------------------------------------------
   audio.forEach((t, n) => {
     const a = o.info.audio.find((x) => x.index === t.index);
     if (!a) throw new Error(`Audio track ${t.index} is missing`);
-    const target = audioTarget(a);
+    // The plan decides: a remux plan keeps every audio track as it is.
+    const target = t.action === "keep" ? ({ copy: true } as const) : audioTarget(a);
     if (target.copy) {
       args.push(`-c:a:${n}`, "copy");
     } else {
@@ -277,6 +285,8 @@ export async function verifyOutput(
   source: MediaInfo,
   plan: Plan,
   version: string,
+  /** A remux keeps the source's video codec. */
+  videoCodec = "hevc",
 ): Promise<VerifyReport> {
   const lines: string[] = [];
   const probed = await job.run(
@@ -309,8 +319,8 @@ export async function verifyOutput(
       `It's ${Math.round(out.durationS)} s long, the original ${Math.round(source.durationS)} s`,
     );
   }
-  if (out.video?.codec !== "hevc")
-    problems.push(`The video is ${out.video?.codec ?? "missing"}, not H.265`);
+  if (out.video?.codec !== videoCodec)
+    problems.push(`The video is ${out.video?.codec ?? "missing"}, not ${videoCodec}`);
   if (out.audio.length !== expected.audio) {
     problems.push(`${out.audio.length} audio track(s), expected ${expected.audio}`);
   }
@@ -427,8 +437,8 @@ export async function saveFrames(
 export interface EncodePayload {
   fileId: number;
   name: string;
-  /** Which slot encodes it (older jobs: the GPU). */
-  encoder?: "gpu" | "cpu";
+  /** Which slot encodes it (older jobs: the GPU); `remux` only removes tracks. */
+  encoder?: Encoder;
 }
 
 export interface EncodeDeps {
@@ -471,8 +481,11 @@ export async function runEncode(
   const { fileId } = job.payload;
   try {
     const file = deps.store.detail(fileId);
-    if (!file?.info?.video || !file.plan || file.decision !== "transcode") {
-      job.log("This file isn't marked for transcoding any more; nothing to do");
+    const remux = job.payload.encoder === "remux";
+    if (!file?.info?.video || !file.plan || file.decision !== (remux ? "remux" : "transcode")) {
+      job.log(
+        `This file isn't marked for ${remux ? "removing audio tracks" : "transcoding"} any more; nothing to do`,
+      );
       return { status: "skipped" };
     }
     const source = path.join(file.root, file.path);
@@ -496,15 +509,23 @@ export async function runEncode(
     if (encoder === "cpu" && !(cpuCrf > 0)) {
       throw new Error("The CPU encoder isn't calibrated yet (Settings → Encoders → CPU quality)");
     }
-    const encoderName = encoder === "gpu" ? "hevc_nvenc" : `libx265 (CRF ${cpuCrf}, ${cpuPreset})`;
+    const encoderName =
+      encoder === "remux"
+        ? "Remux (tracks only)"
+        : encoder === "gpu"
+          ? "hevc_nvenc"
+          : `libx265 (CRF ${cpuCrf}, ${cpuPreset})`;
     const workDir = workDirFor(deps.workRoot, fileId);
     const output = path.join(workDir, "output.mkv");
     await rm(workDir, { recursive: true, force: true });
     await mkdir(workDir, { recursive: true });
 
     try {
-      job.progress(null, "Checking for black bars…");
-      const crop = await detectCrop(job, tools.ffmpeg, source, file.info);
+      let crop: Crop | null = null;
+      if (!remux) {
+        job.progress(null, "Checking for black bars…");
+        crop = await detectCrop(job, tools.ffmpeg, source, file.info);
+      }
       if (crop) {
         job.log(
           `Cropping black bars: ${file.info.video.width}×${file.info.video.height} → ${crop.width}×${crop.height}`,
@@ -523,14 +544,14 @@ export async function runEncode(
         cpuCrf,
         version: deps.version,
       });
-      job.log(`Encoding with ${encoderName}`);
+      job.log(remux ? "Copying without the dropped tracks" : `Encoding with ${encoderName}`);
       const started = Date.now();
       const totalUs = file.info.durationS * 1_000_000;
       const fpsSamples: number[] = [];
       const live = { fps: 0, speed: "" };
       const result = await job.run(tools.ffmpeg, args, {
         // The CPU slot shares the processor with Plex: lowest priority.
-        nice: encoder === "cpu" ? 19 : 10,
+        nice: encoder === "gpu" ? 10 : 19,
         onStdoutLine: (line) => {
           const [key, value = ""] = line.split("=");
           if (key === "fps") {
@@ -568,7 +589,15 @@ export async function runEncode(
       const outputBytes = (await stat(output)).size;
 
       job.progress(null, "Checking the result…");
-      const verify = await verifyOutput(job, tools, output, file.info, file.plan, deps.version);
+      const verify = await verifyOutput(
+        job,
+        tools,
+        output,
+        file.info,
+        file.plan,
+        deps.version,
+        remux ? file.info.video.codec : "hevc",
+      );
       if (!verify.ok)
         throw new Error(`The result failed its checks: ${verify.problems.join("; ")}`);
 
@@ -590,7 +619,8 @@ export async function runEncode(
         frames: [],
       };
 
-      if (savingPercent < minSaving) {
+      // A remux is about the tracks, not the space.
+      if (!remux && savingPercent < minSaving) {
         await rm(workDir, { recursive: true, force: true });
         deps.store.saveOutcome(fileId, {
           status: "not-worth-it",
@@ -603,15 +633,18 @@ export async function runEncode(
         return { status: "not-worth-it", savingPercent };
       }
 
-      job.progress(null, "Saving comparison frames…");
-      details.frames = await saveFrames(
-        job,
-        tools.ffmpeg,
-        { source, output },
-        crop,
-        file.info.durationS,
-        workDir,
-      );
+      // The picture is the same bytes after a remux: nothing to compare.
+      if (!remux) {
+        job.progress(null, "Saving comparison frames…");
+        details.frames = await saveFrames(
+          job,
+          tools.ffmpeg,
+          { source, output },
+          crop,
+          file.info.durationS,
+          workDir,
+        );
+      }
       deps.store.saveOutcome(fileId, {
         status: "awaiting-approval",
         encoder: encoderName,
