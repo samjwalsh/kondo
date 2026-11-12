@@ -464,8 +464,11 @@ complete, and a season counts as complete only when Plex has as many episodes as
 including ones that haven't aired. Someone who requests a show mid-season hears nothing until
 the finale. Its "partially available" status sends nothing.
 
-The Request emails tool checks Seerr every **5 minutes** (Seerr notices new files in Plex within
-a few minutes) and emails the requester once they can start watching:
+The Request emails tool checks as soon as Plex finishes adding a film or episode (Plex's
+notification stream): it runs Seerr's "Plex Recently Added Scan" job right away (it otherwise runs
+every 5 minutes; takes about 4 s), then checks. It waits for 5 s without new notifications (30 s
+at most) so a season pack is one check. It also checks every **5 minutes** as a safety net. It
+emails the requester once they can start watching:
 
 - a **film** once Seerr marks it available (it's in Plex);
 - a **show** once the first requested season (the lowest; specials only if nothing else was

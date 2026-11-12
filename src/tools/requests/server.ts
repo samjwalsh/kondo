@@ -1,4 +1,5 @@
 import { defineTool } from "../../server/core/tools.js";
+import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
 import { type CheckResult, MAX_ATTEMPTS, runCheck } from "./check.js";
 import type { RequestsStatus, WaitingRequest } from "./shared.js";
@@ -32,10 +33,21 @@ export default defineTool({
       ...(email.configured() ? [] : ["Email (Resend) API key and From address"]),
     ];
 
-    ctx.defineJob<Record<string, never>, CheckResult>("check", {
+    ctx.defineJob<{ afterPlex?: boolean }, CheckResult>("check", {
       slot: "general",
-      title: () => "Email people whose requests are ready",
+      title: (p) =>
+        p.afterPlex
+          ? "Plex added something: email people whose requests are ready"
+          : "Email people whose requests are ready",
       run: async (job) => {
+        if (job.payload.afterPlex) {
+          // Seerr only notices Plex's new items on its 5-minute scan; run it now instead.
+          try {
+            await seerr.syncRecentlyAdded();
+          } catch (error) {
+            job.log(`Couldn't run Seerr's Plex scan: ${errorMessage(error)}`, "warn");
+          }
+        }
         const result = await runCheck({ store, seerr, plex, email, names });
         for (const e of result.errors) job.log(e, "warn");
         if (result.before > 0)
@@ -43,16 +55,51 @@ export default defineTool({
         return result;
       },
     });
+    const ready = () => enabled() && missing().length === 0;
     const check = () => ctx.enqueue("check", {}, { dedupeKey: "requests:check" });
 
-    // Seerr notices new files in Plex within a few minutes, so checking every 5 is enough.
+    // The safety net: also catches anything the Plex notifications below miss.
     ctx.every(
       () => 5 * 60_000,
       () => {
-        if (enabled() && missing().length === 0) check();
+        if (ready()) check();
       },
       60_000,
     );
+
+    // As soon as Plex finishes adding a film or episode, sync Seerr and check. Plex sends a few
+    // notifications per item (and one per episode of a season pack), so wait for a quiet
+    // moment: 5 s after the last one, or 30 s after the first at most.
+    const QUIET_MS = 5_000;
+    const MAX_WAIT_MS = 30_000;
+    let timer: NodeJS.Timeout | null = null;
+    let firstAt = 0;
+    let again = false;
+    const afterPlex = () => {
+      timer = null;
+      if (!ready()) return;
+      // One already queued or running: run another when it's done, so nothing just added is missed.
+      if (ctx.activeJobs("check") > 0) again = true;
+      else ctx.enqueue("check", { afterPlex: true }, { dedupeKey: "requests:check" });
+    };
+    ctx.events.subscribe((event) => {
+      if (event.type === "plex.library.changed") {
+        const now = Date.now();
+        if (!timer) firstAt = now;
+        else clearTimeout(timer);
+        timer = setTimeout(afterPlex, Math.max(0, Math.min(QUIET_MS, firstAt + MAX_WAIT_MS - now)));
+      } else if (
+        again &&
+        event.type === "job.updated" &&
+        event.job.tool === "requests" &&
+        event.job.state !== "queued" &&
+        event.job.state !== "running" &&
+        ctx.activeJobs("check") === 0
+      ) {
+        again = false;
+        afterPlex();
+      }
+    });
 
     const status = (): RequestsStatus => ({
       enabled: enabled(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSessions, parseUnmatched } from "../src/server/integrations/plex.js";
+import { isLibraryChange, parseSessions, parseUnmatched } from "../src/server/integrations/plex.js";
 
 describe("plex sessions", () => {
   it("handles an idle server", () => {
@@ -91,5 +91,25 @@ describe("unmatched plex items", () => {
       { id: "3", title: "No Guid", library: "Movies" },
     ]);
     expect(parseUnmatched({ MediaContainer: {} }, "Movies")).toEqual([]);
+  });
+});
+
+describe("plex library notifications", () => {
+  const timeline = (entries: object[]) => ({
+    NotificationContainer: { type: "timeline", TimelineEntry: entries },
+  });
+  const lib = "com.plexapp.plugins.library";
+
+  it("spots a film or episode that finished processing", () => {
+    expect(isLibraryChange(timeline([{ identifier: lib, type: 1, state: 5 }]))).toBe(true);
+    expect(isLibraryChange(timeline([{ identifier: lib, type: 4, state: 5 }]))).toBe(true);
+  });
+
+  it("ignores items still being processed, other types and other notifications", () => {
+    expect(isLibraryChange(timeline([{ identifier: lib, type: 1, state: 0 }]))).toBe(false);
+    expect(isLibraryChange(timeline([{ identifier: lib, type: 9, state: 5 }]))).toBe(false);
+    expect(isLibraryChange(timeline([{ identifier: "other", type: 1, state: 5 }]))).toBe(false);
+    expect(isLibraryChange({ NotificationContainer: { type: "playing" } })).toBe(false);
+    expect(isLibraryChange({})).toBe(false);
   });
 });

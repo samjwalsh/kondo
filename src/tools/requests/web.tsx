@@ -73,8 +73,8 @@ export function RequestsPage() {
           ) : (
             <>
               <p>
-                Checks Seerr every 5 minutes. <strong>{s.waiting}</strong> request(s) aren't ready
-                yet.
+                Checks as soon as Plex adds something, and every 5 minutes.{" "}
+                <strong>{s.waiting}</strong> request(s) aren't ready yet.
               </p>
               <p className="muted small">
                 {s.checkedAt ? `Last checked ${ago(s.checkedAt)}.` : "Not checked yet."}

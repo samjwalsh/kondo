@@ -20,7 +20,7 @@ export const seerrSettings: SettingsSection = {
       key: "apiKey",
       label: "API key",
       type: "secret",
-      help: "Seerr → Settings → General → API Key. Only needed for request emails.",
+      help: "Seerr → Settings → General → API Key. Only needed for request emails. Kondo uses it to read requests and to run Seerr's Plex scan as soon as Plex adds something.",
     },
   ],
 };
@@ -140,6 +140,26 @@ export class SeerrClient {
           }
         : null,
     };
+  }
+
+  /**
+   * Runs Seerr's "Plex Recently Added Scan" now (it normally runs every 5 minutes), so Seerr
+   * marks what Plex just added as available, and waits for it to finish (about 4 s).
+   */
+  async syncRecentlyAdded(timeoutMs = 120_000): Promise<void> {
+    const job = "plex-recently-added-scan";
+    await requestJson(`${this.url()}/api/v1/settings/jobs/${job}/run`, {
+      method: "POST",
+      headers: { "X-Api-Key": this.settings.secret("seerr", "apiKey") ?? "" },
+      timeoutMs: 15_000,
+    });
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const jobs = await this.get<{ id: string; running?: boolean }[]>("/settings/jobs");
+      if (!jobs.find((j) => j.id === job)?.running) return;
+      if (Date.now() > deadline) throw new Error("Seerr's Plex scan is taking over 2 minutes");
+    }
   }
 
   /** Seerr's public address and name, for links in emails. */

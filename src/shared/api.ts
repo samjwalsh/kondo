@@ -126,4 +126,6 @@ export type KondoEvent =
   | { type: "job.updated"; job: Job }
   | { type: "job.log"; jobId: number; line: JobLogLine }
   | { type: "status.changed"; reason: "plex" | "schedule" | "health" | "slots" }
-  | { type: "settings.changed"; scope: string };
+  | { type: "settings.changed"; scope: string }
+  /** Plex finished adding (or re-reading) films or episodes. */
+  | { type: "plex.library.changed" };

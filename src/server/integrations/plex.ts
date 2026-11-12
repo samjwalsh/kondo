@@ -220,7 +220,7 @@ export class PlexClient {
     }
   }
 
-  /** Plex's live notification stream (play/pause/stop), or null if not set up. */
+  /** Plex's live notification stream (playback and library changes), or null if not set up. */
   notificationsUrl(): string | null {
     if (!this.configured()) return null;
     const url = new URL(`${this.base()}/:/websockets/notifications`);
@@ -228,6 +228,30 @@ export class PlexClient {
     url.searchParams.set("X-Plex-Token", this.settings.secret("plex", "token") ?? "");
     return url.toString();
   }
+}
+
+interface RawNotification {
+  NotificationContainer?: {
+    type?: string;
+    TimelineEntry?: { identifier?: string; type?: number; state?: number }[];
+  };
+}
+
+// Plex's timeline: item type 1 is a film, 4 an episode; state 5 means it finished processing.
+const FILM = 1;
+const EPISODE = 4;
+const PROCESSED = 5;
+
+/** Whether a notification says a film or episode just finished being added to (or updated in) the library. */
+export function isLibraryChange(data: RawNotification): boolean {
+  const n = data.NotificationContainer;
+  if (n?.type !== "timeline") return false;
+  return (n.TimelineEntry ?? []).some(
+    (e) =>
+      e.identifier === "com.plexapp.plugins.library" &&
+      (e.type === FILM || e.type === EPISODE) &&
+      e.state === PROCESSED,
+  );
 }
 
 /**
@@ -359,10 +383,9 @@ export class PlexMonitor {
     });
     socket.addEventListener("message", (event) => {
       try {
-        const data = JSON.parse(String(event.data)) as {
-          NotificationContainer?: { type?: string };
-        };
+        const data = JSON.parse(String(event.data)) as RawNotification;
         if (data.NotificationContainer?.type === "playing") this.queueRefresh();
+        else if (isLibraryChange(data)) this.events.emit({ type: "plex.library.changed" });
       } catch {
         // Not JSON we understand; polling still covers it.
       }
