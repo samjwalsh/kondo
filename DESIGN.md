@@ -385,6 +385,19 @@ seeder count (fake swarms report plenty of seeders anyway), or rejecting the `RA
 (it closed in 2023, so new releases with its name are fake, but its genuine old releases are
 common).
 
+### Import as soon as a download finishes
+
+Sonarr and Radarr poll the download client once a minute (fixed in their code), so a
+finished download waited up to a minute before being imported and sent to Plex.
+`POST /api/hooks/download-finished?category=<category>` tells the app that owns the
+category (`sonarr` or `radarr`; anything else is ignored) to run `RefreshMonitoredDownloads`
+now. qBittorrent calls it from "Run external program on torrent finished":
+
+    curl -s -X POST "http://<kondo>:4242/api/hooks/download-finished?category=%L"
+
+Kondo makes the call because it already holds the API keys, so qBittorrent doesn't need
+them. If the hook fails, the one-minute poll still imports the download.
+
 ## Needs a look
 
 Kondo's alerts cover things that break: a service not answering, a job making no progress, a
