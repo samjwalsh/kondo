@@ -51,7 +51,12 @@ export interface EnqueueOptions {
 export interface SlotConfig {
   id: SlotId;
   label: string;
-  concurrency: number;
+  /** Jobs at once; a function is read again on every tick, so a settings change applies. */
+  concurrency: number | (() => number);
+}
+
+function concurrencyOf(slot: SlotConfig): number {
+  return typeof slot.concurrency === "function" ? slot.concurrency() : slot.concurrency;
 }
 
 export type SlotPolicy = (slot: SlotId, force: boolean) => SlotDecision;
@@ -343,6 +348,7 @@ export class JobQueue {
         .map(({ logs: _logs, ...job }) => job);
       return {
         ...slot,
+        concurrency: concurrencyOf(slot),
         allowed: decision.allowed,
         reason: decision.reason,
         jobs,
@@ -380,15 +386,16 @@ export class JobQueue {
     }
     // Fill free slots. Frozen jobs keep their slot.
     for (const slot of this.slots) {
+      const concurrency = concurrencyOf(slot);
       let busy = [...this.active.values()].filter((a) => a.slot === slot.id).length;
-      if (busy >= slot.concurrency) continue;
+      if (busy >= concurrency) continue;
       const candidates = this.db
         .prepare(
           "SELECT * FROM jobs WHERE state = 'queued' AND slot = ? ORDER BY priority DESC, id ASC LIMIT 50",
         )
         .all(slot.id);
       for (const row of candidates) {
-        if (busy >= slot.concurrency) break;
+        if (busy >= concurrency) break;
         if (!this.policy(slot.id, Boolean(row.force)).allowed) continue;
         this.startJob(row);
         busy++;

@@ -187,7 +187,7 @@ tag, so it's never looked at again.
 | Slot | Encoder | Why | Limits |
 |---|---|---|---|
 | `gpu` | `hevc_nvenc` on the 1050 (hardware decode where possible) | fast — the backlog workhorse | 1 job; pauses while Plex is transcoding |
-| `cpu` | `libx265` | smaller files at the same quality, slower | 1 job, capped threads (e.g. 16 of 32), lowest priority (`nice`) |
+| `cpu` | `libx265` | smaller files at the same quality, slower | 2 jobs by default (setting), sharing capped threads (e.g. 28 of 32), lowest priority (`nice`) |
 
 - Encoders sit behind one interface (`canHandle`, `buildArgs`, `parseProgress`), so
   another one (e.g. VAAPI on the RX 5700 XT) can be added later.
@@ -217,7 +217,14 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
   library (Oct 2026, medium preset): CRF 25, files 28 % smaller than NVENC's, about
   2× real time. The job has no page of its own (it's a one-off); it can be run
   again with `POST /api/tools/transcode/calibration`.
-- Each encoder has at most one file queued. The CPU takes the biggest saving.
+- Each encoder has at most one file queued beyond the ones it's encoding. The CPU takes the
+  biggest saving.
+- **Two CPU encodes at once** (Nov 2026). With 28 threads, one 1080p x265 encode at medium kept
+  only about 11 of them busy (the 28 pool threads' CPU time ranged from 189 s down to 48 s):
+  a frame has only 17 rows of 64-pixel blocks, and only about 5 frames are encoded together.
+  So `cpuEncodes` (default 2) runs several, each with an even share of `cpuThreads`; more
+  frame threads would have filled the pool too, but cost some compression. The backlog estimate
+  multiplies the recent per-file speed by the number of encodes.
 - **The GPU only helps with a long backlog** (Nov 2026). Once the backlog was done, new files
   arrive at about 3 a day, which the CPU alone handles easily, yet NVENC took a third of them
   and its files came out about twice the size of x265's (This Is Going to Hurt S01, split

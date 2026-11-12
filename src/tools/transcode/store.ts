@@ -782,11 +782,12 @@ export class LibraryStore {
       .run(key, JSON.stringify(value));
   }
 
-  /** Encode jobs waiting for a slot to free up. */
-  queuedEncodes(slot: "gpu" | "cpu"): number {
+  /** Encode jobs in a slot that are queued, running or paused. */
+  activeEncodes(slot: "gpu" | "cpu"): number {
     const row = this.db
       .prepare(
-        "SELECT COUNT(*) AS n FROM jobs WHERE dedupe_key LIKE 'transcode:encode:%' AND state = 'queued' AND slot = ?",
+        `SELECT COUNT(*) AS n FROM jobs WHERE dedupe_key LIKE 'transcode:encode:%' AND slot = ?
+         AND state IN ('queued', 'running', 'paused')`,
       )
       .get(slot);
     return Number(row?.n ?? 0);

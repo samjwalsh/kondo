@@ -68,6 +68,34 @@ describe("job queue", () => {
     await waitFor(() => state(queue, b.id) === "succeeded");
   });
 
+  it("reads a slot's concurrency again on every tick", async () => {
+    const db = openDb(tempDir());
+    migrate(db, "core", coreMigrations);
+    let size = 1;
+    const queue = new JobQueue(db, new EventBus(), log, [
+      { id: "cpu", label: "CPU", concurrency: () => size },
+    ]);
+    queues.push(queue);
+    const releases: (() => void)[] = [];
+    queue.define("t", "block", {
+      slot: "cpu",
+      title: () => "block",
+      run: () => new Promise<void>((resolve) => releases.push(resolve)),
+    });
+    queue.start(20);
+    const a = queue.enqueue("t", "block", {});
+    const b = queue.enqueue("t", "block", {});
+    await waitFor(() => state(queue, a.id) === "running");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(state(queue, b.id)).toBe("queued");
+    expect(queue.slotStatuses()[0]?.concurrency).toBe(1);
+    size = 2;
+    await waitFor(() => state(queue, b.id) === "running");
+    expect(queue.slotStatuses()[0]?.concurrency).toBe(2);
+    for (const release of releases) release();
+    await waitFor(() => state(queue, b.id) === "succeeded");
+  });
+
   it("waits while the slot isn't allowed, then starts", async () => {
     const { queue, allowed } = setup();
     allowed.set("gpu", false);

@@ -1,5 +1,6 @@
 import type { JobContext } from "../../server/core/jobs.js";
 import { runProcess } from "../../server/core/process.js";
+import { cpuThreadsPerEncode } from "../../server/core/schedule.js";
 import { defineTool, type ToolContext } from "../../server/core/tools.js";
 import { errorMessage } from "../../server/integrations/http.js";
 import type {
@@ -76,7 +77,7 @@ async function runTestEncode(
   job: JobContext<TestEncodePayload>,
 ): Promise<TestEncodeResult> {
   const payload = job.payload;
-  const threads = Number(ctx.settings.values("encoding").cpuThreads);
+  const threads = cpuThreadsPerEncode(ctx.settings.values("encoding"));
   const encoder = payload.slot === "gpu" ? "hevc_nvenc" : "libx265";
   const encoderArgs =
     payload.slot === "gpu"
