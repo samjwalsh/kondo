@@ -464,7 +464,8 @@ a few minutes) and emails the requester once they can start watching:
 Each check keeps the list of approved requests that aren't ready, with the reason (Seerr's
 status, or what Plex has), shown on the Request emails page as "Not ready yet". Seerr never
 closes a request whose title was later deleted (e.g. by Maintainerr), so those stay listed as
-"not in Plex" until they're removed in Seerr.
+"not in Plex" until they're removed in Seerr. Each one there has a **Don't email** button:
+Kondo records it as dismissed and never emails about it (undo from the "Not emailing" list).
 
 Only approved or completed, non-4K requests count. One email per request, never repeated.
 The first check records everything already ready without emailing, so switching it on doesn't

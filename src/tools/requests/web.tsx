@@ -18,13 +18,26 @@ const LABEL: Record<Notice["status"], string> = {
   failed: "failed",
   skipped: "no email address",
   before: "already ready",
+  dismissed: "not emailed",
 };
 
 export function RequestsPage() {
   const { data: s } = useApi<RequestsStatus>("/api/tools/requests/status", checkFinished);
   const { data: notices } = useApi<Notice[]>("/api/tools/requests/notices?limit=30", checkFinished);
   const { data: waiting } = useApi<WaitingRequest[]>("/api/tools/requests/waiting", checkFinished);
+  const { data: dismissed } = useApi<Notice[]>("/api/tools/requests/dismissed", checkFinished);
   const [message, setMessage] = useState<string | null>(null);
+  const [hidden, setHidden] = useState<Set<number>>(new Set());
+
+  const act = async (id: number, action: "dismiss" | "undismiss") => {
+    setMessage(null);
+    try {
+      await api.post(`/api/tools/requests/requests/${id}/${action}`);
+      setHidden((h) => new Set(h).add(id));
+    } catch (e) {
+      setMessage((e as Error).message);
+    }
+  };
 
   const checkNow = async () => {
     setMessage(null);
@@ -112,20 +125,59 @@ export function RequestsPage() {
       {waiting && waiting.length > 0 && (
         <div className="card history">
           <ul className="log-entries">
-            {waiting.map((w) => (
-              <li key={w.requestId}>
-                <div className="log-line">
-                  <span className="muted small">{ago(w.requestedAt)}</span>
-                  <span className="log-name">
-                    <strong>{w.title}</strong>
-                  </span>
-                  <span className="muted small">{w.user}</span>
-                </div>
-                <p className="muted small log-detail">{w.reason}</p>
-              </li>
-            ))}
+            {waiting
+              .filter((w) => !hidden.has(w.requestId))
+              .map((w) => (
+                <li key={w.requestId}>
+                  <div className="log-line">
+                    <span className="muted small">{ago(w.requestedAt)}</span>
+                    <span className="log-name">
+                      <strong>{w.title}</strong>
+                    </span>
+                    <span className="muted small">{w.user}</span>
+                    <button
+                      type="button"
+                      className="small"
+                      onClick={() => void act(w.requestId, "dismiss")}
+                    >
+                      Don't email
+                    </button>
+                  </div>
+                  <p className="muted small log-detail">{w.reason}</p>
+                </li>
+              ))}
           </ul>
         </div>
+      )}
+
+      {dismissed && dismissed.length > 0 && (
+        <>
+          <h2>Not emailing</h2>
+          <p className="muted small">Requests you chose not to email about.</p>
+          <div className="card history">
+            <ul className="log-entries">
+              {dismissed
+                .filter((n) => !hidden.has(n.requestId))
+                .map((n) => (
+                  <li key={n.requestId}>
+                    <div className="log-line">
+                      <span className="log-name">
+                        <strong>{n.title}</strong>
+                      </span>
+                      <span className="muted small">{n.user}</span>
+                      <button
+                        type="button"
+                        className="small"
+                        onClick={() => void act(n.requestId, "undismiss")}
+                      >
+                        Undo
+                      </button>
+                    </div>
+                  </li>
+                ))}
+            </ul>
+          </div>
+        </>
       )}
 
       <h2>Recent jobs</h2>
