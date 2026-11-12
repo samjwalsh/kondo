@@ -467,7 +467,8 @@ without one are recorded as skipped.
 
 Email goes through **Resend's HTTP API** (core *Email* integration: API key, From address,
 From name, test address); a failed send is retried on later checks, up to 5 tries, with a
-Resend idempotency key per try so a restart can't send twice. The email names the title, says
+Resend idempotency key per try so a restart can't send twice. The email greets them by first name
+(the first word of their Seerr display name), names the title, says
 how much of the season is there ("3 of 8 episodes of season 1 so far"), and links to the title
 in Plex Web (Seerr's `mediaUrl`), else to its Seerr page. Seerr's own email notifications should
 be switched off so nobody gets two. The Seerr address and API key are a core integration, also
