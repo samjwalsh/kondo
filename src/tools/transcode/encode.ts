@@ -66,7 +66,12 @@ export function videoArgs(
   o: { cpuThreads: number; cpuPreset?: string; cpuCrf?: number },
 ): string[] {
   if (encoder === "gpu") {
-    // Squish's settings: NVENC H.265, constant quality 32, "hq" preset.
+    // Squish's settings (NVENC H.265, constant quality 32, "hq" preset) plus 32 frames of
+    // lookahead, which made files 2–12% smaller at the same quality on a GTX 1050 (Pascal) with
+    // ffmpeg 4.2. Tested there and left out: B-frames and temporal AQ (Pascal can't do them for
+    // H.265), weighted prediction, non-reference P-frames, the "slow" preset and lookahead above
+    // 32 (no change), and spatial AQ and 10-bit output for 8-bit sources (better on some clips,
+    // worse on others, depending on the quality measure).
     return [
       "-c:v",
       "hevc_nvenc",
@@ -74,6 +79,8 @@ export function videoArgs(
       "hq",
       "-rc",
       "vbr_hq",
+      "-rc-lookahead",
+      "32",
       "-cq",
       "32",
       "-b:v",
