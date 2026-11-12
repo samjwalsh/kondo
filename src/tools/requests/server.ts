@@ -1,7 +1,7 @@
 import { defineTool } from "../../server/core/tools.js";
 import type { SettingsSection } from "../../shared/settings.js";
 import { type CheckResult, MAX_ATTEMPTS, runCheck } from "./check.js";
-import type { RequestsStatus } from "./shared.js";
+import type { RequestsStatus, WaitingRequest } from "./shared.js";
 import { migrations, RequestsStore } from "./store.js";
 
 export const requestsSettings: SettingsSection = {
@@ -25,6 +25,7 @@ export default defineTool({
   register(ctx) {
     const store = new RequestsStore(ctx.db);
     const { seerr, email, plex } = ctx.integrations;
+    const names = new Map<string, string>();
     const enabled = () => ctx.settings.values("requests").enabled === true;
     const missing = () => [
       ...(seerr.configured() ? [] : ["Seerr address and API key"]),
@@ -35,7 +36,7 @@ export default defineTool({
       slot: "general",
       title: () => "Email people whose requests are ready",
       run: async (job) => {
-        const result = await runCheck({ store, seerr, plex, email });
+        const result = await runCheck({ store, seerr, plex, email, names });
         for (const e of result.errors) job.log(e, "warn");
         if (result.before > 0)
           job.log(`First check: ${result.before} request(s) were already ready, so no emails.`);
@@ -65,6 +66,10 @@ export default defineTool({
       app.get("/status", async () => status());
       app.get<{ Querystring: { limit?: string } }>("/notices", async (request) =>
         store.recent({ limit: Math.min(Math.max(Number(request.query.limit) || 30, 1), 200) }),
+      );
+      app.get(
+        "/waiting",
+        async () => JSON.parse(store.meta("waitingList") ?? "[]") as WaitingRequest[],
       );
       app.post("/check", async (_request, reply) => {
         const gaps = missing();

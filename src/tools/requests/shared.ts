@@ -31,3 +31,14 @@ export interface RequestsStatus {
   /** Requests approved but not ready to watch yet. */
   waiting: number;
 }
+
+/** An approved request nobody can start watching yet, and why. */
+export interface WaitingRequest {
+  requestId: number;
+  type: "movie" | "tv";
+  title: string;
+  user: string;
+  requestedAt: string;
+  requestStatus: "approved" | "completed";
+  reason: string;
+}

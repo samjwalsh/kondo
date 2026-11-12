@@ -22,7 +22,7 @@ import {
   type SeerrTitle,
 } from "../../server/integrations/seerr.js";
 import { buildMessage, firstName, type ReadyInfo, seasonDetail } from "./message.js";
-import type { Notice } from "./shared.js";
+import type { Notice, WaitingRequest } from "./shared.js";
 import type { RequestsStore } from "./store.js";
 
 /** Failed emails are retried on later checks, up to this many tries in all. */
@@ -34,6 +34,8 @@ export interface CheckDeps {
   plex: Pick<PlexClient, "configured" | "episodeNumbers">;
   email: Pick<Email, "send">;
   now?: () => number;
+  /** Titles by "type:tmdbId", kept between checks, for naming requests that aren't ready. */
+  names?: Map<string, string>;
 }
 
 export interface CheckResult {
@@ -51,49 +53,83 @@ export function firstSeason(request: SeerrRequest): number | null {
   return numbers.find((n) => n > 0) ?? numbers[0] ?? null;
 }
 
-/** Cheap pre-check from the request list alone, before fetching any details. */
-function mightBeReady(r: SeerrRequest): boolean {
-  if (r.status !== REQUEST_APPROVED && r.status !== REQUEST_COMPLETED) return false;
-  if (r.is4k) return false;
-  return r.type === "movie"
-    ? r.media.status === MEDIA_AVAILABLE
-    : r.media.status === MEDIA_PARTIALLY_AVAILABLE || r.media.status === MEDIA_AVAILABLE;
+/** Why Seerr's media status means nothing is watchable yet. */
+const MEDIA_STATUS_REASON: Record<number, string> = {
+  1: "Not in Plex yet (status unknown)",
+  2: "Not in Plex yet (pending)",
+  3: "Not in Plex yet (processing)",
+  4: "Partly in Plex",
+  5: "In Plex",
+  6: "Blocklisted in Seerr",
+  7: "Deleted from Plex",
+};
+
+/** Cheap pre-check from the request list alone: null if it might be ready, else why not. */
+function notReadyReason(r: SeerrRequest): string | null {
+  const ok =
+    r.type === "movie"
+      ? r.media.status === MEDIA_AVAILABLE
+      : r.media.status === MEDIA_PARTIALLY_AVAILABLE || r.media.status === MEDIA_AVAILABLE;
+  return ok ? null : (MEDIA_STATUS_REASON[r.media.status] ?? `Seerr status ${r.media.status}`);
 }
 
-/** What's ready to watch for this request, or null if nothing is yet. */
+export type Verdict = { info: ReadyInfo } | { waiting: string };
+
+/** What's ready to watch for this request, or why nothing is yet. */
 export async function readiness(
   r: SeerrRequest,
   title: SeerrTitle,
   plex: CheckDeps["plex"],
-): Promise<ReadyInfo | null> {
+): Promise<Verdict> {
   const base = {
     type: r.type,
     title: title.title,
     year: title.year,
     posterPath: title.posterPath,
   };
-  if (!title.media) return null;
-  if (r.type === "movie") return title.media.status === MEDIA_AVAILABLE ? base : null;
+  if (!title.media) return { waiting: "Seerr has no media record" };
+  if (r.type === "movie") {
+    return title.media.status === MEDIA_AVAILABLE
+      ? { info: base }
+      : { waiting: MEDIA_STATUS_REASON[title.media.status] ?? "Not in Plex yet" };
+  }
 
   const number = firstSeason(r);
-  if (number === null) return null;
+  if (number === null) return { waiting: "No seasons in the request" };
   const status = title.media.seasons.find((s) => s.seasonNumber === number)?.status;
   const total = title.episodeCounts.get(number) ?? 0;
   const moreSeasons = (r.seasons ?? []).length > 1;
   if (status === MEDIA_AVAILABLE) {
-    return { ...base, moreSeasons, season: { number, have: total, total, complete: true } };
+    return {
+      info: { ...base, moreSeasons, season: { number, have: total, total, complete: true } },
+    };
   }
-  if (status !== MEDIA_PARTIALLY_AVAILABLE) return null;
+  if (status !== MEDIA_PARTIALLY_AVAILABLE) {
+    const seasons = title.media.seasons.map((s) => `S${s.seasonNumber}:${s.status}`).join(" ");
+    return {
+      waiting: `Season ${number}: ${status === undefined ? "Seerr has no status" : (MEDIA_STATUS_REASON[status] ?? `status ${status}`)} (show ${MEDIA_STATUS_REASON[title.media.status] ?? title.media.status}; Seerr seasons ${seasons || "none"})`,
+    };
+  }
   // Partly there: only ready if episode 1 is, so they can start from the beginning.
   if (!plex.configured() || !title.media.ratingKey) {
-    return { ...base, moreSeasons, season: { number, have: null, total, complete: false } };
+    return {
+      info: { ...base, moreSeasons, season: { number, have: null, total, complete: false } },
+    };
   }
   const episodes = await plex.episodeNumbers(title.media.ratingKey, number);
-  if (!episodes?.includes(1)) return null;
+  if (!episodes)
+    return { waiting: `Season ${number}: Plex has no such season (key ${title.media.ratingKey})` };
+  if (!episodes.includes(1)) {
+    return {
+      waiting: `Season ${number}: no episode 1 in Plex (has ${episodes.join(", ") || "none"})`,
+    };
+  }
   return {
-    ...base,
-    moreSeasons,
-    season: { number, have: episodes.length, total, complete: false },
+    info: {
+      ...base,
+      moreSeasons,
+      season: { number, have: episodes.length, total, complete: false },
+    },
   };
 }
 
@@ -122,21 +158,46 @@ export async function runCheck(deps: CheckDeps): Promise<CheckResult> {
   const titles = new Map<string, Promise<SeerrTitle>>();
   let main: Awaited<ReturnType<CheckDeps["seerr"]["main"]>> | null = null;
 
+  const names = deps.names ?? new Map<string, string>();
+  const waiting: WaitingRequest[] = [];
+  const getTitle = (r: SeerrRequest) => {
+    const key = `${r.type}:${r.media.tmdbId}`;
+    if (!titles.has(key)) titles.set(key, deps.seerr.title(r.type, r.media.tmdbId));
+    return (titles.get(key) as Promise<SeerrTitle>).then((t) => {
+      names.set(key, t.title);
+      return t;
+    });
+  };
+  const wait = async (r: SeerrRequest, reason: string) => {
+    result.waiting++;
+    const key = `${r.type}:${r.media.tmdbId}`;
+    if (!names.has(key)) await getTitle(r).catch(() => null);
+    waiting.push({
+      requestId: r.id,
+      type: r.type,
+      title: names.get(key) ?? `TMDB ${r.media.tmdbId}`,
+      user: r.requestedBy.displayName || `User ${r.requestedBy.id}`,
+      requestedAt: r.createdAt,
+      requestStatus: r.status === REQUEST_COMPLETED ? "completed" : "approved",
+      reason,
+    });
+  };
+
   for (const r of open) {
-    if (!mightBeReady(r)) {
-      result.waiting++;
+    const early = notReadyReason(r);
+    if (early) {
+      await wait(r, early);
       continue;
     }
-    let info: ReadyInfo | null;
+    let info: ReadyInfo;
     try {
-      const key = `${r.type}:${r.media.tmdbId}`;
-      if (!titles.has(key)) titles.set(key, deps.seerr.title(r.type, r.media.tmdbId));
-      const title = await (titles.get(key) as Promise<SeerrTitle>);
-      info = await readiness(r, title, deps.plex);
-      if (!info) {
-        result.waiting++;
+      const title = await getTitle(r);
+      const verdict = await readiness(r, title, deps.plex);
+      if ("waiting" in verdict) {
+        await wait(r, verdict.waiting);
         continue;
       }
+      info = verdict.info;
       const at = new Date(now()).toISOString();
       const previous = store.get(r.id);
       const notice: Notice = {
@@ -197,5 +258,6 @@ export async function runCheck(deps: CheckDeps): Promise<CheckResult> {
   store.setMeta("checkedAt", new Date(now()).toISOString());
   store.setMeta("lastError", result.errors.length > 0 ? result.errors.join("; ") : null);
   store.setMeta("waiting", String(result.waiting));
+  store.setMeta("waitingList", JSON.stringify(waiting));
   return result;
 }
