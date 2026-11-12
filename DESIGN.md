@@ -458,6 +458,14 @@ a few minutes) and emails the requester once they can start watching:
 - a **show** once the first requested season (the lowest; specials only if nothing else was
   asked for) is complete, or is partly there **and Plex has its episode 1**, so they can start
   from the beginning. Without Plex set up, partly there is enough.
+- a **specials-only** request (season 0) once any special is in Plex: specials stand alone and
+  rarely have an episode 1.
+
+Each check keeps the list of approved requests that aren't ready, with the reason (Seerr's
+status, or what Plex has), shown on the Request emails page as "Not ready yet". Seerr never
+closes a request whose title was later deleted (e.g. by Maintainerr), so those stay listed as
+"not in Plex" until they're removed in Seerr. Each one there has a **Don't email** button:
+Kondo records it as dismissed and never emails about it (undo from the "Not emailing" list).
 
 Only approved or completed, non-4K requests count. One email per request, never repeated.
 The first check records everything already ready without emailing, so switching it on doesn't
@@ -467,7 +475,8 @@ without one are recorded as skipped.
 
 Email goes through **Resend's HTTP API** (core *Email* integration: API key, From address,
 From name, test address); a failed send is retried on later checks, up to 5 tries, with a
-Resend idempotency key per try so a restart can't send twice. The email names the title, says
+Resend idempotency key per try so a restart can't send twice. The email greets them by first name
+(the first word of their Seerr display name), names the title, says
 how much of the season is there ("3 of 8 episodes of season 1 so far"), and links to the title
 in Plex Web (Seerr's `mediaUrl`), else to its Seerr page. Seerr's own email notifications should
 be switched off so nobody gets two. The Seerr address and API key are a core integration, also

@@ -3,7 +3,7 @@ import { coreMigrations, migrate, openDb } from "../src/server/core/db.js";
 import type { EmailMessage } from "../src/server/integrations/email.js";
 import type { SeerrRequest, SeerrTitle } from "../src/server/integrations/seerr.js";
 import { firstSeason, MAX_ATTEMPTS, runCheck } from "../src/tools/requests/check.js";
-import { buildMessage, readyLines } from "../src/tools/requests/message.js";
+import { buildMessage, firstName, readyLines } from "../src/tools/requests/message.js";
 import { migrations, RequestsStore } from "../src/tools/requests/store.js";
 import { tempDir } from "./helpers.js";
 
@@ -132,6 +132,54 @@ describe("request emails", () => {
     expect(t.sent[0]?.text).toContain("https://requests.example/tv/500");
   });
 
+  it("counts a specials-only request as ready once any special is in Plex", async () => {
+    const t = setup();
+    await t.check();
+    t.state.seasonStatus = [{ seasonNumber: 0, status: 4 }];
+    t.state.plexEpisodes = [];
+    t.state.requests = [showRequest(12, [0])];
+    expect(await t.check()).toMatchObject({ sent: 0, waiting: 1 });
+    t.state.plexEpisodes = [45, 46];
+    expect(await t.check()).toMatchObject({ sent: 1 });
+    expect(t.sent[0]?.text).toContain("2 episodes of the specials so far");
+  });
+
+  it("says why a request isn't ready", async () => {
+    const t = setup();
+    await t.check();
+    t.state.requests = [movieRequest(13, 7), showRequest(14, [1])];
+    await t.check();
+    expect(JSON.parse(t.store.meta("waitingList") ?? "[]")).toMatchObject([
+      { requestId: 13, title: "Film 113", reason: "Deleted from Plex" },
+      { requestId: 14, title: "The Show", reason: "Season 1: no episode 1 in Plex (has 2, 3)" },
+    ]);
+  });
+
+  it("never emails a dismissed request, and emails it again once undone", async () => {
+    const t = setup();
+    await t.check();
+    t.state.requests = [movieRequest(15, 3)];
+    await t.check();
+    t.store.save({
+      requestId: 15,
+      at: "2026-11-12T21:00:00Z",
+      status: "dismissed",
+      type: "movie",
+      title: "Film 115",
+      detail: null,
+      user: "Amy",
+      attempts: 0,
+      error: null,
+    });
+    t.state.requests = [movieRequest(15, 5)];
+    expect(await t.check()).toMatchObject({ sent: 0, waiting: 0 });
+    expect(t.store.dismissed()).toHaveLength(1);
+    expect(t.store.recent({ limit: 10 })).toHaveLength(0);
+
+    t.store.remove(15);
+    expect(await t.check()).toMatchObject({ sent: 1 });
+  });
+
   it("counts a complete season as ready without asking Plex", async () => {
     const t = setup();
     await t.check();
@@ -179,6 +227,22 @@ describe("request emails", () => {
     await t.check();
     expect(t.store.get(10)).toMatchObject({ status: "skipped", user: "Local user" });
     expect(t.sent).toHaveLength(0);
+  });
+
+  it("greets people by the first word of their Seerr display name", async () => {
+    expect(firstName("Amy Jones")).toBe("Amy");
+    expect(firstName("  ajones92 ")).toBe("ajones92");
+    const t = setup();
+    await t.check();
+    t.state.requests = [
+      {
+        ...movieRequest(11, 5),
+        requestedBy: { id: 7, email: "a@example.com", displayName: "Amy Jones" },
+      },
+    ];
+    await t.check();
+    expect(t.sent[0]?.text).toMatch(/^Hi Amy,/);
+    expect(t.store.get(11)).toMatchObject({ user: "Amy Jones" });
   });
 
   it("writes the email in plain words and escapes titles", () => {

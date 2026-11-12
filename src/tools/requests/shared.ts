@@ -5,8 +5,9 @@
  * - `failed`: sending failed; retried on later checks until `attempts` reaches the limit.
  * - `skipped`: no email address, so nobody to tell.
  * - `before`: was already ready when Kondo started watching, so no email.
+ * - `dismissed`: Sam chose "Don't email" (e.g. an old request someone has forgotten about).
  */
-export type NoticeStatus = "sent" | "failed" | "skipped" | "before";
+export type NoticeStatus = "sent" | "failed" | "skipped" | "before" | "dismissed";
 
 export interface Notice {
   requestId: number;
@@ -30,4 +31,15 @@ export interface RequestsStatus {
   lastError: string | null;
   /** Requests approved but not ready to watch yet. */
   waiting: number;
+}
+
+/** An approved request nobody can start watching yet, and why. */
+export interface WaitingRequest {
+  requestId: number;
+  type: "movie" | "tv";
+  title: string;
+  user: string;
+  requestedAt: string;
+  requestStatus: "approved" | "completed";
+  reason: string;
 }

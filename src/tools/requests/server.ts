@@ -1,7 +1,7 @@
 import { defineTool } from "../../server/core/tools.js";
 import type { SettingsSection } from "../../shared/settings.js";
 import { type CheckResult, MAX_ATTEMPTS, runCheck } from "./check.js";
-import type { RequestsStatus } from "./shared.js";
+import type { RequestsStatus, WaitingRequest } from "./shared.js";
 import { migrations, RequestsStore } from "./store.js";
 
 export const requestsSettings: SettingsSection = {
@@ -25,6 +25,7 @@ export default defineTool({
   register(ctx) {
     const store = new RequestsStore(ctx.db);
     const { seerr, email, plex } = ctx.integrations;
+    const names = new Map<string, string>();
     const enabled = () => ctx.settings.values("requests").enabled === true;
     const missing = () => [
       ...(seerr.configured() ? [] : ["Seerr address and API key"]),
@@ -35,7 +36,7 @@ export default defineTool({
       slot: "general",
       title: () => "Email people whose requests are ready",
       run: async (job) => {
-        const result = await runCheck({ store, seerr, plex, email });
+        const result = await runCheck({ store, seerr, plex, email, names });
         for (const e of result.errors) job.log(e, "warn");
         if (result.before > 0)
           job.log(`First check: ${result.before} request(s) were already ready, so no emails.`);
@@ -66,6 +67,42 @@ export default defineTool({
       app.get<{ Querystring: { limit?: string } }>("/notices", async (request) =>
         store.recent({ limit: Math.min(Math.max(Number(request.query.limit) || 30, 1), 200) }),
       );
+      app.get(
+        "/waiting",
+        async () => JSON.parse(store.meta("waitingList") ?? "[]") as WaitingRequest[],
+      );
+      app.get("/dismissed", async () => store.dismissed());
+      // "Don't email": the request is never emailed about (it must be in the waiting list).
+      app.post<{ Params: { id: string } }>("/requests/:id/dismiss", async (request, reply) => {
+        const id = Number(request.params.id);
+        const list = JSON.parse(store.meta("waitingList") ?? "[]") as WaitingRequest[];
+        const w = list.find((x) => x.requestId === id);
+        if (!w) return reply.code(404).send({ error: "That request isn't waiting" });
+        store.save({
+          requestId: id,
+          at: new Date().toISOString(),
+          status: "dismissed",
+          type: w.type,
+          title: w.title,
+          detail: w.reason,
+          user: w.user,
+          attempts: 0,
+          error: null,
+        });
+        store.setMeta("waitingList", JSON.stringify(list.filter((x) => x.requestId !== id)));
+        store.setMeta("waiting", String(list.length - 1));
+        return { ok: true };
+      });
+      // Undo: the next check treats it like any other request again.
+      app.post<{ Params: { id: string } }>("/requests/:id/undismiss", async (request, reply) => {
+        const id = Number(request.params.id);
+        if (store.get(id)?.status !== "dismissed") {
+          return reply.code(404).send({ error: "That request isn't dismissed" });
+        }
+        store.remove(id);
+        check();
+        return { ok: true };
+      });
       app.post("/check", async (_request, reply) => {
         const gaps = missing();
         if (gaps.length > 0) {
