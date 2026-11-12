@@ -48,7 +48,36 @@ interface RawSession {
 }
 
 interface SectionsResponse {
-  MediaContainer?: { Directory?: { key: string; title?: string; Location?: { path: string }[] }[] };
+  MediaContainer?: {
+    Directory?: { key: string; type?: string; title?: string; Location?: { path: string }[] }[];
+  };
+}
+
+interface LibraryItemsResponse {
+  MediaContainer?: {
+    Metadata?: { ratingKey?: string; title?: string; year?: number; guid?: string }[];
+  };
+}
+
+/** A film or show Plex couldn't match to its metadata (no poster, no details). */
+export interface UnmatchedItem {
+  id: string;
+  title: string;
+  library: string;
+}
+
+/**
+ * Plex gives an item it couldn't match a `local://` guid instead of `plex://…`; it never retries
+ * on its own (e.g. after a DNS outage when the item was added).
+ */
+export function parseUnmatched(json: LibraryItemsResponse, library: string): UnmatchedItem[] {
+  return (json.MediaContainer?.Metadata ?? [])
+    .filter((m) => !m.guid || m.guid.startsWith("local://"))
+    .map((m) => ({
+      id: String(m.ratingKey ?? m.title),
+      title: m.year ? `${m.title ?? "Unknown"} (${m.year})` : (m.title ?? "Unknown"),
+      library,
+    }));
 }
 
 interface SessionsResponse {
@@ -106,16 +135,36 @@ export class PlexClient {
     return parseSessions(json);
   }
 
+  private async sections() {
+    const json = await requestJson<SectionsResponse>(`${this.base()}/library/sections`, {
+      headers: this.headers(),
+      timeoutMs: 5000,
+    });
+    return json.MediaContainer?.Directory ?? [];
+  }
+
+  /** Films and shows in movie/TV libraries that Plex couldn't match. */
+  async unmatched(): Promise<UnmatchedItem[]> {
+    const found: UnmatchedItem[] = [];
+    for (const section of await this.sections()) {
+      if (section.type !== "movie" && section.type !== "show") continue;
+      // `unmatched=1` is the filter Plex Web's "Unmatched" view uses; the guid check in
+      // parseUnmatched keeps the result right even if a Plex version ignores it.
+      const json = await requestJson<LibraryItemsResponse>(
+        `${this.base()}/library/sections/${section.key}/all?unmatched=1`,
+        { headers: this.headers(), timeoutMs: 30_000 },
+      );
+      found.push(...parseUnmatched(json, section.title ?? section.key));
+    }
+    return found;
+  }
+
   /**
    * Asks Plex to rescan one folder. Returns the library's name, or null if no Plex library
    * contains the folder.
    */
   async refreshFolder(folder: string): Promise<string | null> {
-    const json = await requestJson<SectionsResponse>(`${this.base()}/library/sections`, {
-      headers: this.headers(),
-      timeoutMs: 5000,
-    });
-    const section = (json.MediaContainer?.Directory ?? []).find((d) =>
+    const section = (await this.sections()).find((d) =>
       (d.Location ?? []).some((l) => {
         const root = l.path.replace(/\/+$/, "");
         return folder === root || folder.startsWith(`${root}/`);

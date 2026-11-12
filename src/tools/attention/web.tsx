@@ -13,6 +13,7 @@ const KIND_LABELS: Record<AttentionKind, string> = {
   import: "Stuck in the download queue",
   health: "Sonarr/Radarr warnings",
   service: "Not answering",
+  unmatched: "Not matched in Plex",
 };
 
 const checkFinished = (event: { type: string; job?: { tool: string; state: string } }) =>
@@ -50,8 +51,8 @@ export function AttentionPage() {
       <p className="muted">
         Things that don't fail loudly but never sort themselves out. Kondo checks every hour and
         reports only problems that have lasted (missing items and stuck downloads after{" "}
-        {s?.stuckDays ?? 1} day(s), failed imports and warnings after {s?.stuckHours ?? 6} hours),
-        at the top of the morning summary.
+        {s?.stuckDays ?? 1} day(s), failed imports, warnings and items Plex couldn't match after{" "}
+        {s?.stuckHours ?? 6} hours), at the top of the morning summary.
       </p>
       {message && <p className="muted small">{message}</p>}
       {s && (

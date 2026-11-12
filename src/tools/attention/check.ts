@@ -3,6 +3,7 @@
 
 import type { ArrClient } from "../../server/integrations/arr.js";
 import { errorMessage, request } from "../../server/integrations/http.js";
+import type { PlexClient } from "../../server/integrations/plex.js";
 import type { AttentionItem, AttentionStatus } from "./shared.js";
 import type { AttentionStore, SeenItem } from "./store.js";
 
@@ -26,6 +27,7 @@ export interface CheckDeps {
   /** Health check sources to leave out, e.g. "AllowedHostsCheck". */
   ignoreHealth: string[];
   services: { app: string; name: string; url: string }[];
+  plex?: Pick<PlexClient, "configured" | "unmatched">;
   /** For tests. */
   ping?: (url: string) => Promise<void>;
   now?: () => number;
@@ -106,6 +108,22 @@ export async function runCheck(deps: CheckDeps): Promise<{ errors: string[] }> {
           detail: h.source,
         })),
     );
+  }
+
+  if (deps.plex?.configured()) {
+    const plex = deps.plex;
+    await source("plex:unmatched", "Plex libraries", async () =>
+      (await plex.unmatched()).map((u) => ({
+        id: u.id,
+        kind: "unmatched" as const,
+        app: "plex",
+        group: u.library,
+        what: u.title,
+        detail: `In ${u.library}. In Plex: ⋯ → Match…`,
+      })),
+    );
+  } else {
+    deps.store.reconcile("plex:unmatched", [], at);
   }
 
   for (const service of deps.services) {
@@ -231,6 +249,12 @@ export function summaryLines(status: AttentionStatus): string[] {
         imports.map((i) => `${i.what} (${APP_NAMES[i.app] ?? i.app}: ${clip(i.detail ?? "", 60)})`),
         3,
       )}`,
+    );
+  }
+  const unmatched = of("unmatched");
+  if (unmatched.length > 0) {
+    lines.push(
+      `• Not matched in Plex for ${status.stuckHours}+ h (⋯ → Match…): ${shortList(unmatched.map((i) => i.what))}`,
     );
   }
   for (const h of of("health")) lines.push(`• ${APP_NAMES[h.app] ?? h.app}: ${clip(h.what)}`);

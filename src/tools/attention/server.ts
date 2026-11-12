@@ -21,12 +21,12 @@ export const attentionSettings: SettingsSection = {
     },
     {
       key: "stuckHours",
-      label: "Report failed imports and health warnings after (hours)",
+      label: "Report failed imports, health warnings and unmatched Plex items after (hours)",
       type: "number",
       default: 6,
       min: 1,
       max: 168,
-      help: "Finished downloads Sonarr/Radarr can't import on their own, and their own health warnings.",
+      help: "Finished downloads Sonarr/Radarr can't import on their own, their own health warnings, and films or shows Plex couldn't match (no poster or details).",
     },
     {
       key: "ignoreHealth",
@@ -59,7 +59,7 @@ export default defineTool({
   id: "attention",
   name: "Needs a look",
   description:
-    "Lists what needs a person: items never found, downloads stuck before import, Sonarr/Radarr warnings, Bazarr or Seerr down.",
+    "Lists what needs a person: items never found, downloads stuck before import, Sonarr/Radarr warnings, Bazarr or Seerr down, films or shows Plex couldn't match.",
   settings: [attentionSettings],
   migrations,
 
@@ -80,6 +80,7 @@ export default defineTool({
           { app: "bazarr", name: "Bazarr", url: String(values().bazarrUrl ?? "") },
           { app: "seerr", name: "Seerr", url: String(values().seerrUrl ?? "") },
         ],
+        plex: ctx.integrations.plex,
       });
 
     ctx.defineJob<Record<string, never>, { errors: string[] }>("check", {

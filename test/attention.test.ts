@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { coreMigrations, migrate, openDb } from "../src/server/core/db.js";
 import type { SettingsStore } from "../src/server/core/settings.js";
 import { ArrClient, type MissingItem, type QueueProblem } from "../src/server/integrations/arr.js";
+import type { UnmatchedItem } from "../src/server/integrations/plex.js";
 import { attentionStatus, ping, runCheck, summaryLines } from "../src/tools/attention/check.js";
 import { AttentionStore, migrations } from "../src/tools/attention/store.js";
 import { tempDir } from "./helpers.js";
@@ -207,6 +208,47 @@ describe("needs a look", () => {
     expect(summaryLines(t.status())[1]).toBe(
       "• Not found or not finished after a day: Show 0 (1 episode), Show 1 (1 episode), Show 2 (1 episode), Show 3 (1 episode) and 3 more",
     );
+  });
+});
+
+describe("items Plex couldn't match", () => {
+  it("reports them after the hours limit, and forgets them once matched", async () => {
+    const db = openDb(tempDir());
+    migrate(db, "core", coreMigrations);
+    migrate(db, "tool:attention", migrations);
+    const store = new AttentionStore(db);
+    let unmatched: UnmatchedItem[] = [
+      { id: "91277", title: "Warrior (2011)", library: "Movies" },
+      { id: "91278", title: "The Last of Us (2023)", library: "Sam's TV" },
+    ];
+    let configured = true;
+    let now = T0;
+    const check = () =>
+      runCheck({
+        store,
+        arrs: [],
+        ignoreHealth: [],
+        services: [],
+        plex: { configured: () => configured, unmatched: async () => unmatched },
+        now: () => now,
+      });
+
+    await check();
+    expect(attentionStatus(store, LIMITS, now).due).toEqual([]);
+    now = T0 + 6 * 3_600_000;
+    await check();
+    expect(summaryLines(attentionStatus(store, LIMITS, now))).toEqual([
+      "Needs a look:",
+      "• Not matched in Plex for 6+ h (⋯ → Match…): Warrior (2011), The Last of Us (2023)",
+    ]);
+
+    unmatched = unmatched.slice(1);
+    await check();
+    expect(store.items().map((i) => i.what)).toEqual(["The Last of Us (2023)"]);
+
+    configured = false;
+    await check();
+    expect(store.items()).toEqual([]);
   });
 });
 
