@@ -444,6 +444,35 @@ movie list says neither the file's score (read from `/moviefile`, 100 movies a r
 a movie was last searched, so Kondo also keeps its own record of when it asked for each item and
 uses the later of the two.
 
+## Request emails
+
+Seerr's own "Request Available" notification only fires when **every** requested season is
+complete, and a season counts as complete only when Plex has as many episodes as TMDB lists,
+including ones that haven't aired. Someone who requests a show mid-season hears nothing until
+the finale. Its "partially available" status sends nothing.
+
+The Request emails tool checks Seerr every **5 minutes** (Seerr notices new files in Plex within
+a few minutes) and emails the requester once they can start watching:
+
+- a **film** once Seerr marks it available (it's in Plex);
+- a **show** once the first requested season (the lowest; specials only if nothing else was
+  asked for) is complete, or is partly there **and Plex has its episode 1**, so they can start
+  from the beginning. Without Plex set up, partly there is enough.
+
+Only approved or completed, non-4K requests count. One email per request, never repeated.
+The first check records everything already ready without emailing, so switching it on doesn't
+email everyone about old requests. The address comes from the request (the requester's Seerr
+user, i.e. their Plex account's email), looked up via `/user/:id` if missing; requesters
+without one are recorded as skipped.
+
+Email goes through **Resend's HTTP API** (core *Email* integration: API key, From address,
+From name, test address); a failed send is retried on later checks, up to 5 tries, with a
+Resend idempotency key per try so a restart can't send twice. The email names the title, says
+how much of the season is there ("3 of 8 episodes of season 1 so far"), and links to the title
+in Plex Web (Seerr's `mediaUrl`), else to its Seerr page. Seerr's own email notifications should
+be switched off so nobody gets two. The Seerr address and API key are a core integration, also
+used by Needs a look (its old Seerr address setting moved there).
+
 
 - **Dashboard**: one card per tool (health, what's running, next window, warnings).
 - **Transcode**: live queue (per slot, with progress and ETA) · awaiting approval ·

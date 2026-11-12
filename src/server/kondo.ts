@@ -17,10 +17,12 @@ import { SettingsStore } from "./core/settings.js";
 import { MorningSummary } from "./core/summary.js";
 import type { Integrations, ToolContext, ToolDefinition } from "./core/tools.js";
 import { ArrClient, arrSettings } from "./integrations/arr.js";
+import { Email, emailSettings } from "./integrations/email.js";
 import { errorMessage } from "./integrations/http.js";
 import { Kuma, kumaSettings } from "./integrations/kuma.js";
 import { PlexClient, PlexMonitor, plexSettings } from "./integrations/plex.js";
 import { QbittorrentClient, qbittorrentSettings } from "./integrations/qbittorrent.js";
+import { SeerrClient, seerrSettings } from "./integrations/seerr.js";
 import { Telegram, telegramSettings } from "./integrations/telegram.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerHealthRoutes } from "./routes/health.js";
@@ -71,7 +73,9 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
     arrSettings("sonarr"),
     arrSettings("radarr"),
     qbittorrentSettings,
+    seerrSettings,
     telegramSettings,
+    emailSettings,
     kumaSettings,
   ]) {
     settings.register(section);
@@ -83,6 +87,8 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
     radarr: new ArrClient("radarr", settings),
     qbittorrent: new QbittorrentClient(settings),
     telegram: new Telegram(settings),
+    seerr: new SeerrClient(settings),
+    email: new Email(settings),
   };
   const kuma = new Kuma(settings);
   const plex = new PlexMonitor(integrations.plex, events, app.log);
@@ -164,6 +170,8 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
       radarr: () => integrations.radarr.test(),
       qbittorrent: () => integrations.qbittorrent.test(),
       telegram: () => integrations.telegram.test(),
+      seerr: () => integrations.seerr.test(),
+      email: () => integrations.email.test(),
       kuma: () => kuma.test(),
     },
   });

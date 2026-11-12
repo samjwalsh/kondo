@@ -125,4 +125,13 @@ export const coreMigrations: Migration[] = [
     version: 2,
     sql: `CREATE TABLE core_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
   },
+  {
+    // Seerr's address moved from the "Needs a look" settings to its own integration.
+    version: 3,
+    sql: `
+      INSERT OR IGNORE INTO settings (scope, key, value)
+        SELECT 'seerr', 'url', value FROM settings WHERE scope = 'attention' AND key = 'seerrUrl';
+      DELETE FROM settings WHERE scope = 'attention' AND key = 'seerrUrl';
+    `,
+  },
 ];

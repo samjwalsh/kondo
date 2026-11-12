@@ -44,14 +44,6 @@ export const attentionSettings: SettingsSection = {
       placeholder: "http://bazarr:6767",
       help: "Reported if it stops answering. Leave empty to skip.",
     },
-    {
-      key: "seerrUrl",
-      label: "Seerr / Overseerr address",
-      type: "url",
-      default: "",
-      placeholder: "http://seerr:5055",
-      help: "Reported if it stops answering. Leave empty to skip.",
-    },
   ],
 };
 
@@ -78,7 +70,7 @@ export default defineTool({
         ignoreHealth: splitLines(values().ignoreHealth),
         services: [
           { app: "bazarr", name: "Bazarr", url: String(values().bazarrUrl ?? "") },
-          { app: "seerr", name: "Seerr", url: String(values().seerrUrl ?? "") },
+          { app: "seerr", name: "Seerr", url: ctx.integrations.seerr.url() },
         ],
         plex: ctx.integrations.plex,
       });
