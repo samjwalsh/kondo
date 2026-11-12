@@ -21,7 +21,7 @@ import {
   type SeerrRequest,
   type SeerrTitle,
 } from "../../server/integrations/seerr.js";
-import { buildMessage, type ReadyInfo, seasonDetail } from "./message.js";
+import { buildMessage, firstName, type ReadyInfo, seasonDetail } from "./message.js";
 import type { Notice } from "./shared.js";
 import type { RequestsStore } from "./store.js";
 
@@ -164,7 +164,7 @@ export async function runCheck(deps: CheckDeps): Promise<CheckResult> {
       main ??= await deps.seerr.main();
       const plexUrl = title.media?.plexUrl ?? null;
       const message = buildMessage(info, {
-        userName: notice.user,
+        userName: firstName(notice.user),
         plexUrl,
         seerrUrl: main.applicationUrl ? `${main.applicationUrl}/${r.type}/${r.media.tmdbId}` : null,
         appTitle: main.applicationTitle,
