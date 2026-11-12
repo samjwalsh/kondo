@@ -8,8 +8,17 @@
  * - `import`: a download Sonarr/Radarr can't import on their own.
  * - `health`: one of Sonarr/Radarr's own health warnings.
  * - `service`: Bazarr or Seerr not answering.
+ * - `unmatched`: a film or show Plex couldn't match (no poster or details), e.g. because Plex
+ *   couldn't reach its servers when it was added. Plex never retries on its own.
  */
-export type AttentionKind = "not-found" | "replace" | "stalled" | "import" | "health" | "service";
+export type AttentionKind =
+  | "not-found"
+  | "replace"
+  | "stalled"
+  | "import"
+  | "health"
+  | "service"
+  | "unmatched";
 
 export interface AttentionItem {
   key: string;

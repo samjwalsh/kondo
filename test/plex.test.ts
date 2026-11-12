@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSessions } from "../src/server/integrations/plex.js";
+import { parseSessions, parseUnmatched } from "../src/server/integrations/plex.js";
 
 describe("plex sessions", () => {
   it("handles an idle server", () => {
@@ -68,5 +68,28 @@ describe("plex sessions", () => {
       MediaContainer: { Metadata: [{ title: "x", TranscodeSession: { videoDecision: "copy" } }] },
     });
     expect(s?.transcode).toBe("none");
+  });
+});
+
+describe("unmatched plex items", () => {
+  it("keeps only items with a local guid (Plex's mark for 'no match')", () => {
+    expect(
+      parseUnmatched(
+        {
+          MediaContainer: {
+            Metadata: [
+              { ratingKey: "1", title: "Warrior", year: 2011, guid: "local://91277" },
+              { ratingKey: "2", title: "Heat", year: 1995, guid: "plex://movie/5d776825" },
+              { ratingKey: "3", title: "No Guid" },
+            ],
+          },
+        },
+        "Movies",
+      ),
+    ).toEqual([
+      { id: "1", title: "Warrior (2011)", library: "Movies" },
+      { id: "3", title: "No Guid", library: "Movies" },
+    ]);
+    expect(parseUnmatched({ MediaContainer: {} }, "Movies")).toEqual([]);
   });
 });
