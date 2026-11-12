@@ -18,6 +18,11 @@ export interface MessageContext {
   appTitle: string;
 }
 
+/** "Amy Jones" → "Amy": the email greets people by their first name. */
+export function firstName(displayName: string): string {
+  return displayName.trim().split(/\s+/)[0] || displayName;
+}
+
 const esc = (s: string) =>
   s.replace(
     /[&<>"']/g,

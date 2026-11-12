@@ -3,7 +3,7 @@ import { coreMigrations, migrate, openDb } from "../src/server/core/db.js";
 import type { EmailMessage } from "../src/server/integrations/email.js";
 import type { SeerrRequest, SeerrTitle } from "../src/server/integrations/seerr.js";
 import { firstSeason, MAX_ATTEMPTS, runCheck } from "../src/tools/requests/check.js";
-import { buildMessage, readyLines } from "../src/tools/requests/message.js";
+import { buildMessage, firstName, readyLines } from "../src/tools/requests/message.js";
 import { migrations, RequestsStore } from "../src/tools/requests/store.js";
 import { tempDir } from "./helpers.js";
 
@@ -179,6 +179,22 @@ describe("request emails", () => {
     await t.check();
     expect(t.store.get(10)).toMatchObject({ status: "skipped", user: "Local user" });
     expect(t.sent).toHaveLength(0);
+  });
+
+  it("greets people by the first word of their Seerr display name", async () => {
+    expect(firstName("Amy Jones")).toBe("Amy");
+    expect(firstName("  ajones92 ")).toBe("ajones92");
+    const t = setup();
+    await t.check();
+    t.state.requests = [
+      {
+        ...movieRequest(11, 5),
+        requestedBy: { id: 7, email: "a@example.com", displayName: "Amy Jones" },
+      },
+    ];
+    await t.check();
+    expect(t.sent[0]?.text).toMatch(/^Hi Amy,/);
+    expect(t.store.get(11)).toMatchObject({ user: "Amy Jones" });
   });
 
   it("writes the email in plain words and escapes titles", () => {
