@@ -5,7 +5,15 @@ import attention from "./attention/server.js";
 import diagnostics from "./diagnostics/server.js";
 import downloads from "./downloads/server.js";
 import missing from "./missing/server.js";
+import requests from "./requests/server.js";
 import transcode from "./transcode/server.js";
 
 // "Needs a look" comes first, so its lines lead the morning summary.
-export const tools: ToolDefinition[] = [attention, transcode, downloads, missing, diagnostics];
+export const tools: ToolDefinition[] = [
+  attention,
+  transcode,
+  downloads,
+  missing,
+  requests,
+  diagnostics,
+];

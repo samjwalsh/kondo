@@ -5,6 +5,7 @@ import { AttentionPage } from "./attention/web.js";
 import { DiagnosticsPage } from "./diagnostics/web.js";
 import { DownloadsPage } from "./downloads/web.js";
 import { MissingPage } from "./missing/web.js";
+import { RequestsPage } from "./requests/web.js";
 import { TranscodePage } from "./transcode/web.js";
 
 export const toolPages: Record<string, ComponentType> = {
@@ -12,5 +13,6 @@ export const toolPages: Record<string, ComponentType> = {
   transcode: TranscodePage,
   downloads: DownloadsPage,
   missing: MissingPage,
+  requests: RequestsPage,
   diagnostics: DiagnosticsPage,
 };

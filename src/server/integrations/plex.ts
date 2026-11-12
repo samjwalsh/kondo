@@ -59,6 +59,10 @@ interface LibraryItemsResponse {
   };
 }
 
+interface ChildrenResponse {
+  MediaContainer?: { Metadata?: { ratingKey?: string; index?: number }[] };
+}
+
 /** A film or show Plex couldn't match to its metadata (no poster, no details). */
 export interface UnmatchedItem {
   id: string;
@@ -157,6 +161,25 @@ export class PlexClient {
       found.push(...parseUnmatched(json, section.title ?? section.key));
     }
     return found;
+  }
+
+  /**
+   * Episode numbers Plex has for one season of a show (by the show's rating key), or null if
+   * Plex has no such season.
+   */
+  async episodeNumbers(showKey: string, season: number): Promise<number[] | null> {
+    const children = async (key: string) =>
+      (
+        await requestJson<ChildrenResponse>(
+          `${this.base()}/library/metadata/${encodeURIComponent(key)}/children`,
+          { headers: this.headers(), timeoutMs: 10_000 },
+        )
+      ).MediaContainer?.Metadata ?? [];
+    const found = (await children(showKey)).find((s) => s.index === season);
+    if (!found?.ratingKey) return null;
+    return (await children(found.ratingKey))
+      .map((e) => e.index)
+      .filter((n): n is number => typeof n === "number");
   }
 
   /**

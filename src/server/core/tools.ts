@@ -2,8 +2,10 @@ import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import type { Job, ToolCard } from "../../shared/api.js";
 import type { SettingsSection } from "../../shared/settings.js";
 import type { ArrClient } from "../integrations/arr.js";
+import type { Email } from "../integrations/email.js";
 import type { PlexClient, PlexMonitor } from "../integrations/plex.js";
 import type { QbittorrentClient } from "../integrations/qbittorrent.js";
+import type { SeerrClient } from "../integrations/seerr.js";
 import type { Telegram } from "../integrations/telegram.js";
 import type { Db, Migration } from "./db.js";
 import type { EventBus } from "./events.js";
@@ -19,6 +21,8 @@ export interface Integrations {
   radarr: ArrClient;
   qbittorrent: QbittorrentClient;
   telegram: Telegram;
+  seerr: SeerrClient;
+  email: Email;
 }
 
 /** Everything the core offers a tool. */
