@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   clockIn,
+  cpuEncodes,
+  cpuThreadsPerEncode,
   decideSlot,
   isInWindow,
   parseClock,
@@ -90,5 +92,18 @@ describe("slot decisions", () => {
 
   it("respects a slot turned off in settings", () => {
     expect(decideSlot("gpu", inputs({ enabled: false, force: true })).allowed).toBe(false);
+  });
+});
+
+describe("CPU encodes", () => {
+  it("splits the threads evenly between the encodes", () => {
+    expect(cpuThreadsPerEncode({ cpuThreads: 28, cpuEncodes: 2 })).toBe(14);
+    expect(cpuThreadsPerEncode({ cpuThreads: 28, cpuEncodes: 3 })).toBe(9);
+    expect(cpuThreadsPerEncode({ cpuThreads: 1, cpuEncodes: 4 })).toBe(1);
+  });
+
+  it("treats a missing value as one encode", () => {
+    expect(cpuEncodes({ cpuThreads: 16 })).toBe(1);
+    expect(cpuThreadsPerEncode({ cpuThreads: 16 })).toBe(16);
   });
 });

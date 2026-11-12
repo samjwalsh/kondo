@@ -4,6 +4,7 @@
 import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { JobCancelledError, type JobContext } from "../../server/core/jobs.js";
+import { cpuThreadsPerEncode } from "../../server/core/schedule.js";
 import type { SettingsStore } from "../../server/core/settings.js";
 import { errorMessage } from "../../server/integrations/http.js";
 import { extractMediaInfo, type Probe } from "./media.js";
@@ -514,7 +515,7 @@ export async function runEncode(
         ? "Remux (tracks only)"
         : encoder === "gpu"
           ? "hevc_nvenc"
-          : `libx265 (CRF ${cpuCrf}, ${cpuPreset})`;
+          : `libx265 (CRF ${cpuCrf}, ${cpuPreset}, ${cpuThreadsPerEncode(encoding)} threads)`;
     const workDir = workDirFor(deps.workRoot, fileId);
     const output = path.join(workDir, "output.mkv");
     await rm(workDir, { recursive: true, force: true });
@@ -539,7 +540,7 @@ export async function runEncode(
         plan: file.plan,
         crop,
         encoder,
-        cpuThreads: Number(encoding.cpuThreads),
+        cpuThreads: cpuThreadsPerEncode(encoding),
         cpuPreset,
         cpuCrf,
         version: deps.version,

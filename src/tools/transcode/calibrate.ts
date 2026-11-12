@@ -4,6 +4,7 @@
 import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { JobContext } from "../../server/core/jobs.js";
+import { cpuThreadsPerEncode } from "../../server/core/schedule.js";
 import type { SettingsStore } from "../../server/core/settings.js";
 import { videoArgs } from "./encode.js";
 import type { Calibration, CalibrationPoint, CalibrationSample } from "./shared.js";
@@ -205,7 +206,8 @@ export async function runCalibration(
             "-sn",
             "-dn",
             ...videoArgs(encoder, tenBit, {
-              cpuThreads: Number(encoding.cpuThreads),
+              // As much as one of the CPU encodes gets, so the speed it reports is theirs.
+              cpuThreads: cpuThreadsPerEncode(encoding),
               cpuPreset: preset,
               cpuCrf: crf,
             }),

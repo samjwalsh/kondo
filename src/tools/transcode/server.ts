@@ -1,11 +1,12 @@
 import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Lock } from "../../server/core/lock.js";
+import { cpuEncodes } from "../../server/core/schedule.js";
 import { sendFile } from "../../server/core/sendFile.js";
 import { defineTool, type Integrations } from "../../server/core/tools.js";
 import { errorMessage } from "../../server/integrations/http.js";
 import type { SettingsSection } from "../../shared/settings.js";
-import { gpuDecision } from "./backlog.js";
+import { DEFAULT_CPU_SPEED, gpuDecision } from "./backlog.js";
 import { CALIBRATION_KEY, runCalibration } from "./calibrate.js";
 import { type EncodePayload, type EncodeResult, runEncode, workDirFor } from "./encode.js";
 import { librarySettings, runScan } from "./scan.js";
@@ -215,15 +216,17 @@ export default defineTool({
       return gpuDecision({
         cpuInUse: Boolean(encoding.cpuEnabled) && Number(encoding.cpuCrf) > 0,
         backlogSeconds: store.backlogSeconds(),
-        cpuSpeed: store.cpuSpeed(),
+        // Each result's speed is one encode's; several at once get through more.
+        cpuSpeed: (store.cpuSpeed() ?? DEFAULT_CPU_SPEED) * cpuEncodes(encoding),
         thresholdHours: Number(encoding.gpuBacklogHours ?? 0),
       });
     };
 
     /**
      * Keeps up to `maxWaiting` results waiting or in progress. Each encoder gets one file queued
-     * at a time. The CPU (better compression) takes the biggest saving; the GPU only helps when
-     * the CPU has a long backlog, and then takes the smallest savings.
+     * beyond what it runs at once (the CPU may run several). The CPU (better compression) takes
+     * the biggest saving; the GPU only helps when the CPU has a long backlog, and then takes the
+     * smallest savings.
      */
     const feed = () => {
       autoApprove();
@@ -251,19 +254,23 @@ export default defineTool({
         }
       }
       for (const encoder of encoders) {
-        if (free <= 0) return;
-        if (store.queuedEncodes(encoder) > 0) continue;
-        const file = store.nextCandidates(
-          1,
-          encoder === "gpu" && cpuInUse ? "smallest" : "biggest",
-        )[0];
-        if (!file) return;
-        ctx.enqueue<EncodePayload>(
-          "encode",
-          { fileId: file.id, name: path.basename(file.path), encoder },
-          { dedupeKey: encodeKey(file.id) },
-        );
-        free--;
+        const atOnce = encoder === "cpu" ? cpuEncodes(encoding) : 1;
+        let active = store.activeEncodes(encoder);
+        while (active < atOnce + 1) {
+          if (free <= 0) return;
+          const file = store.nextCandidates(
+            1,
+            encoder === "gpu" && cpuInUse ? "smallest" : "biggest",
+          )[0];
+          if (!file) return;
+          ctx.enqueue<EncodePayload>(
+            "encode",
+            { fileId: file.id, name: path.basename(file.path), encoder },
+            { dedupeKey: encodeKey(file.id) },
+          );
+          active++;
+          free--;
+        }
       }
     };
 

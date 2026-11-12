@@ -76,25 +76,43 @@ describe("feeding the encoders", () => {
     return { k, queued };
   }
 
-  it("leaves the CPU unused until it's calibrated, one file queued per encoder", async () => {
+  it("leaves the CPU unused until it's calibrated, one file queued beyond the one encoding", async () => {
     const { k, queued } = await kondoWithCandidates([3000, 1000, 2000]);
     k.settings.update("transcode", { mode: "approval" });
-    expect(queued()).toEqual([["gpu", "E0.mkv"]]);
+    expect(queued()).toEqual([
+      ["gpu", "E0.mkv"],
+      ["gpu", "E2.mkv"],
+    ]);
   });
 
   it("leaves a short backlog to the CPU, biggest saving first", async () => {
-    const { k, queued } = await kondoWithCandidates([3000, 1000, 2000]);
-    k.settings.update("encoding", { cpuCrf: 27 });
+    const { k, queued } = await kondoWithCandidates([3000, 1000, 2000, 500]);
+    k.settings.update("encoding", { cpuCrf: 27, cpuEncodes: 1 });
     k.settings.update("transcode", { mode: "approval" });
-    expect(queued()).toEqual([["cpu", "E0.mkv"]]);
+    expect(queued()).toEqual([
+      ["cpu", "E0.mkv"],
+      ["cpu", "E2.mkv"],
+    ]);
+  });
+
+  it("fills every CPU encode at once, plus one waiting", async () => {
+    const { k, queued } = await kondoWithCandidates([3000, 1000, 2000, 4000, 500]);
+    k.settings.update("encoding", { cpuCrf: 27, cpuEncodes: 2 });
+    k.settings.update("transcode", { mode: "approval" });
+    expect(queued()).toEqual([
+      ["cpu", "E3.mkv"],
+      ["cpu", "E0.mkv"],
+      ["cpu", "E2.mkv"],
+    ]);
   });
 
   it("lets the GPU help with the smallest savings when it's always allowed", async () => {
     const { k, queued } = await kondoWithCandidates([3000, 1000, 2000]);
-    k.settings.update("encoding", { cpuCrf: 27, gpuBacklogHours: 0 });
+    k.settings.update("encoding", { cpuCrf: 27, cpuEncodes: 1, gpuBacklogHours: 0 });
     k.settings.update("transcode", { mode: "approval" });
     expect(queued()).toEqual([
       ["cpu", "E0.mkv"],
+      ["cpu", "E2.mkv"],
       ["gpu", "E1.mkv"],
     ]);
   });

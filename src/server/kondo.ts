@@ -12,7 +12,7 @@ import { EventBus } from "./core/events.js";
 import { Health } from "./core/health.js";
 import { JobQueue, type SlotConfig } from "./core/jobs.js";
 import { Alerts, Heartbeat } from "./core/notify.js";
-import { encodingSettings, Scheduler, scheduleSettings } from "./core/schedule.js";
+import { cpuEncodes, encodingSettings, Scheduler, scheduleSettings } from "./core/schedule.js";
 import { SettingsStore } from "./core/settings.js";
 import { MorningSummary } from "./core/summary.js";
 import type { Integrations, ToolContext, ToolDefinition } from "./core/tools.js";
@@ -24,12 +24,6 @@ import { QbittorrentClient, qbittorrentSettings } from "./integrations/qbittorre
 import { Telegram, telegramSettings } from "./integrations/telegram.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerHealthRoutes } from "./routes/health.js";
-
-const SLOTS: SlotConfig[] = [
-  { id: "gpu", label: "GPU", concurrency: 1 },
-  { id: "cpu", label: "CPU", concurrency: 1 },
-  { id: "general", label: "General", concurrency: 2 },
-];
 
 const STUCK_AFTER_MS = 30 * 60_000;
 
@@ -93,7 +87,12 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
   const kuma = new Kuma(settings);
   const plex = new PlexMonitor(integrations.plex, events, app.log);
   const scheduler = new Scheduler(settings, plex, events);
-  const jobs = new JobQueue(db, events, app.log, SLOTS);
+  const slots: SlotConfig[] = [
+    { id: "gpu", label: "GPU", concurrency: 1 },
+    { id: "cpu", label: "CPU", concurrency: () => cpuEncodes(settings.values("encoding")) },
+    { id: "general", label: "General", concurrency: 2 },
+  ];
+  const jobs = new JobQueue(db, events, app.log, slots);
   jobs.setPolicy((slot, force) => scheduler.decide(slot, force));
   scheduler.setQueuedCounter(() => jobs.queuedCount(["gpu", "cpu"]));
 

@@ -92,12 +92,32 @@ export const encodingSettings: SettingsSection = {
       default: 16,
       min: 1,
       max: 256,
-      help: "Leave headroom for Plex and everything else on the host.",
+      help: "In total, shared evenly between the CPU encodes. Leave headroom for Plex and everything else on the host.",
+    },
+    {
+      key: "cpuEncodes",
+      label: "CPU encodes at once",
+      type: "number",
+      default: 2,
+      min: 1,
+      max: 4,
+      help: "One x265 encode of a 1080p file keeps only about 11 threads busy, so with more threads than that, two at once get through the work faster.",
     },
     { key: "ffmpegPath", label: "ffmpeg", type: "string", default: "ffmpeg" },
     { key: "ffprobePath", label: "ffprobe", type: "string", default: "ffprobe" },
   ],
 };
+
+/** How many CPU encodes run at once (one if unset). */
+export function cpuEncodes(encoding: Record<string, unknown>): number {
+  const n = Math.floor(Number(encoding.cpuEncodes ?? 1));
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+}
+
+/** x265 threads for each CPU encode: the total split evenly between them. */
+export function cpuThreadsPerEncode(encoding: Record<string, unknown>): number {
+  return Math.max(1, Math.floor(Number(encoding.cpuThreads) / cpuEncodes(encoding)));
+}
 
 export interface SlotDecision {
   allowed: boolean;
