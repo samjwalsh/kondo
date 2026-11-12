@@ -65,9 +65,10 @@ describe("ffmpeg command", () => {
     expect(maps).toEqual(["0:0", "0:1", "0:3", "0:4", "0:5"]);
   });
 
-  it("encodes video like Squish did, cropped", () => {
+  it("encodes video like Squish did plus lookahead, cropped", () => {
     expect(valueAfter(args, "-c:v")).toBe("hevc_nvenc");
     expect(valueAfter(args, "-preset")).toBe("hq");
+    expect(valueAfter(args, "-rc-lookahead")).toBe("32");
     expect(valueAfter(args, "-cq")).toBe("32");
     expect(valueAfter(args, "-vf")).toBe("crop=1920:800:0:140");
   });
