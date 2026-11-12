@@ -26,6 +26,7 @@ import { SeerrClient, seerrSettings } from "./integrations/seerr.js";
 import { Telegram, telegramSettings } from "./integrations/telegram.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerHookRoutes } from "./routes/hooks.js";
 
 const STUCK_AFTER_MS = 30 * 60_000;
 
@@ -153,6 +154,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
   }
 
   registerHealthRoutes(app, config);
+  registerHookRoutes(app, { sonarr: integrations.sonarr, radarr: integrations.radarr });
   registerApiRoutes(app, {
     version: config.version,
     startedAt,

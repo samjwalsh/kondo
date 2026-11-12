@@ -188,6 +188,14 @@ export class ArrClient {
     return text.trim() === "" ? null : (JSON.parse(text) as T);
   }
 
+  /**
+   * Asks Sonarr/Radarr to check their download client now instead of at the next one-minute
+   * poll, so a finished download is imported (and Plex told) straight away.
+   */
+  async refreshDownloads(): Promise<void> {
+    await this.post("/command", { name: "RefreshMonitoredDownloads" });
+  }
+
   /** Asks Sonarr to rescan a series (or Radarr a movie) so it picks up a replaced file. */
   async rescan(id: number): Promise<void> {
     await this.post(
