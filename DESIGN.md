@@ -458,6 +458,13 @@ a few minutes) and emails the requester once they can start watching:
 - a **show** once the first requested season (the lowest; specials only if nothing else was
   asked for) is complete, or is partly there **and Plex has its episode 1**, so they can start
   from the beginning. Without Plex set up, partly there is enough.
+- a **specials-only** request (season 0) once any special is in Plex: specials stand alone and
+  rarely have an episode 1.
+
+Each check keeps the list of approved requests that aren't ready, with the reason (Seerr's
+status, or what Plex has), shown on the Request emails page as "Not ready yet". Seerr never
+closes a request whose title was later deleted (e.g. by Maintainerr), so those stay listed as
+"not in Plex" until they're removed in Seerr.
 
 Only approved or completed, non-4K requests count. One email per request, never repeated.
 The first check records everything already ready without emailing, so switching it on doesn't

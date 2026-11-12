@@ -132,6 +132,29 @@ describe("request emails", () => {
     expect(t.sent[0]?.text).toContain("https://requests.example/tv/500");
   });
 
+  it("counts a specials-only request as ready once any special is in Plex", async () => {
+    const t = setup();
+    await t.check();
+    t.state.seasonStatus = [{ seasonNumber: 0, status: 4 }];
+    t.state.plexEpisodes = [];
+    t.state.requests = [showRequest(12, [0])];
+    expect(await t.check()).toMatchObject({ sent: 0, waiting: 1 });
+    t.state.plexEpisodes = [45, 46];
+    expect(await t.check()).toMatchObject({ sent: 1 });
+    expect(t.sent[0]?.text).toContain("2 episodes of the specials so far");
+  });
+
+  it("says why a request isn't ready", async () => {
+    const t = setup();
+    await t.check();
+    t.state.requests = [movieRequest(13, 7), showRequest(14, [1])];
+    await t.check();
+    expect(JSON.parse(t.store.meta("waitingList") ?? "[]")).toMatchObject([
+      { requestId: 13, title: "Film 113", reason: "Deleted from Plex" },
+      { requestId: 14, title: "The Show", reason: "Season 1: no episode 1 in Plex (has 2, 3)" },
+    ]);
+  });
+
   it("counts a complete season as ready without asking Plex", async () => {
     const t = setup();
     await t.check();

@@ -4,7 +4,7 @@ import { Card, JobList } from "../../web/components.js";
 import { ago } from "../../web/format.js";
 import { useApi } from "../../web/live.js";
 import { Link } from "../../web/router.js";
-import type { Notice, RequestsStatus } from "./shared.js";
+import type { Notice, RequestsStatus, WaitingRequest } from "./shared.js";
 
 const checkFinished = (event: { type: string; job?: { tool: string; state: string } }) =>
   (event.type === "job.updated" &&
@@ -23,6 +23,7 @@ const LABEL: Record<Notice["status"], string> = {
 export function RequestsPage() {
   const { data: s } = useApi<RequestsStatus>("/api/tools/requests/status", checkFinished);
   const { data: notices } = useApi<Notice[]>("/api/tools/requests/notices?limit=30", checkFinished);
+  const { data: waiting } = useApi<WaitingRequest[]>("/api/tools/requests/waiting", checkFinished);
   const [message, setMessage] = useState<string | null>(null);
 
   const checkNow = async () => {
@@ -94,6 +95,33 @@ export function RequestsPage() {
                       .join(" · ")}
                   </p>
                 )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <h2>Not ready yet</h2>
+      <p className="muted small">
+        Approved requests nobody can start watching yet, and why (from the last check). Anything
+        Seerr calls "not in Plex" that is in Plex means Seerr hasn't linked it: check the title
+        matches in Seerr, or scan Plex from Seerr's settings. Old requests for things since deleted
+        stay here until they're removed in Seerr.
+      </p>
+      {waiting && waiting.length === 0 && <p className="muted">Nothing waiting.</p>}
+      {waiting && waiting.length > 0 && (
+        <div className="card history">
+          <ul className="log-entries">
+            {waiting.map((w) => (
+              <li key={w.requestId}>
+                <div className="log-line">
+                  <span className="muted small">{ago(w.requestedAt)}</span>
+                  <span className="log-name">
+                    <strong>{w.title}</strong>
+                  </span>
+                  <span className="muted small">{w.user}</span>
+                </div>
+                <p className="muted small log-detail">{w.reason}</p>
               </li>
             ))}
           </ul>

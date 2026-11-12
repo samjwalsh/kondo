@@ -110,7 +110,8 @@ export async function readiness(
       waiting: `Season ${number}: ${status === undefined ? "Seerr has no status" : (MEDIA_STATUS_REASON[status] ?? `status ${status}`)} (show ${MEDIA_STATUS_REASON[title.media.status] ?? title.media.status}; Seerr seasons ${seasons || "none"})`,
     };
   }
-  // Partly there: only ready if episode 1 is, so they can start from the beginning.
+  // Partly there: only ready if episode 1 is, so they can start from the beginning. Specials
+  // (season 0) are standalone and rarely have an episode 1, so any one of them will do.
   if (!plex.configured() || !title.media.ratingKey) {
     return {
       info: { ...base, moreSeasons, season: { number, have: null, total, complete: false } },
@@ -119,9 +120,12 @@ export async function readiness(
   const episodes = await plex.episodeNumbers(title.media.ratingKey, number);
   if (!episodes)
     return { waiting: `Season ${number}: Plex has no such season (key ${title.media.ratingKey})` };
-  if (!episodes.includes(1)) {
+  if (number === 0 ? episodes.length === 0 : !episodes.includes(1)) {
     return {
-      waiting: `Season ${number}: no episode 1 in Plex (has ${episodes.join(", ") || "none"})`,
+      waiting:
+        number === 0
+          ? "Specials: none in Plex yet"
+          : `Season ${number}: no episode 1 in Plex (has ${episodes.join(", ") || "none"})`,
     };
   }
   return {

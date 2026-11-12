@@ -30,9 +30,13 @@ const esc = (s: string) =>
   );
 
 /** e.g. "Season 1: 3 of 8 episodes" — for Kondo's own page. */
+const seasonName = (n: number) => (n === 0 ? "the specials" : `season ${n}`);
+
 export function seasonDetail(info: ReadyInfo): string | null {
   const s = info.season;
   if (!s) return null;
+  if (s.number === 0)
+    return s.have === null ? "Specials" : `Specials: ${s.have} of ${s.total || "?"}`;
   if (s.complete) return `Season ${s.number}: all${s.total ? ` ${s.total}` : ""} episodes`;
   if (s.have === null) return `Season ${s.number}: some episodes`;
   return `Season ${s.number}: ${s.have}${s.total ? ` of ${s.total}` : ""} episodes`;
@@ -46,13 +50,13 @@ export function readyLines(info: ReadyInfo): string[] {
   const lines: string[] = [];
   if (s.complete) {
     const all =
-      s.total > 1 ? `all ${s.total} episodes of season ${s.number}` : `season ${s.number}`;
+      s.total > 1 ? `all ${s.total} episodes of ${seasonName(s.number)}` : seasonName(s.number);
     lines.push(`${name}, which you requested, is now on Plex: ${all}.`);
   } else {
     const sofar =
       s.have === null
-        ? `the first episodes of season ${s.number}`
-        : `${s.have}${s.total ? ` of ${s.total}` : ""} episode${s.have === 1 ? "" : "s"} of season ${s.number} so far`;
+        ? `the first episodes of ${seasonName(s.number)}`
+        : `${s.have}${s.total ? ` of ${s.total}` : ""} episode${s.have === 1 ? "" : "s"} of ${seasonName(s.number)} so far`;
     lines.push(`${name}, which you requested, has started arriving on Plex: ${sofar}.`);
     lines.push("The rest will follow as they come in.");
   }
