@@ -67,6 +67,8 @@ export type SlotPolicy = (slot: SlotId, force: boolean) => SlotDecision;
 export type AffinitySetter = (pid: number, cpus: number | null) => void;
 
 const MAX_ATTEMPTS = 3;
+/** Threads a process creates while its CPU limit is being set can miss it; set it again this often. */
+const AFFINITY_REFRESH_MS = 30_000;
 const PROGRESS_WRITE_MS = 1000;
 const KEEP_FINISHED_DAYS = 30;
 const MAX_LOG_LINES = 500;
@@ -102,6 +104,8 @@ class ActiveJob {
   paused = false;
   /** The CPU limit applied to its processes (null = all CPUs). */
   cpus: number | null = null;
+  /** When the CPU limit was last applied (0 = never touched, so nothing to refresh). */
+  cpusAppliedAt = 0;
   private pausedSince = 0;
   private pausedTotal = 0;
   stopReason: "cancel" | "shutdown" | null = null;
@@ -443,12 +447,18 @@ export class JobQueue {
 
   /** Holds a job's processes to `cpus` CPUs (null = all), logging when that changes. */
   private applyCpuLimit(active: ActiveJob, cpus: number | null): void {
-    if (active.cpus === cpus) return;
+    const changed = active.cpus !== cpus;
+    const refresh =
+      active.cpusAppliedAt > 0 && Date.now() - active.cpusAppliedAt >= AFFINITY_REFRESH_MS;
+    if (!changed && !refresh) return;
     active.cpus = cpus;
+    active.cpusAppliedAt = Date.now();
     for (const p of active.processes) {
-      if (p.pid !== undefined) this.setAffinity(p.pid, cpus);
+      if (p.pid !== undefined && p.exitCode === null) this.setAffinity(p.pid, cpus);
     }
-    this.addLog(active.id, cpus === null ? "Back on all CPUs" : `Held to ${cpus} CPUs`);
+    if (changed) {
+      this.addLog(active.id, cpus === null ? "Back on all CPUs" : `Held to ${cpus} CPUs`);
+    }
   }
 
   private startJob(row: Row): void {
@@ -522,6 +532,7 @@ export class JobQueue {
             active.processes.add(child);
             if (active.cpus !== null && child.pid !== undefined) {
               this.setAffinity(child.pid, active.cpus);
+              active.cpusAppliedAt = Date.now();
             }
             if (active.paused) child.kill("SIGSTOP");
             return () => active.processes.delete(child);
