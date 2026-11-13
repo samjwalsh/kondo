@@ -122,7 +122,9 @@ discover → probe → decide → (queue) → encode → verify → approve → 
    results waiting for approval never sit in the library and a crash can't leave
    half-written files there. Black bars are cropped only when six sample points
    agree.
-6. **Verify**: duration within max(1 s, 0.5 %); expected streams present; video is
+6. **Verify**: duration within max(1 s, 0.5 %), comparing the video tracks' own lengths when
+   both files record them (a subtitle cue past the end of the picture stretches the file's
+   overall length, and dropping that subtitle would look like a shorter result); expected streams present; video is
    HEVC; three short decode checks (start/middle/end); result ≤ 80 % of the
    original's size (otherwise "not worth it": temp deleted, original kept).
 7. **Approve**: in approval mode the result waits with a summary (size before →
@@ -422,6 +424,7 @@ when it was first seen. It reports a problem only once it has lasted:
 | Finished download Sonarr/Radarr can't import on their own (blocked or pending, warning or error) | their queue | 6 hours |
 | Sonarr/Radarr health warning or error (minus an ignore list) | their `/health` | 6 hours |
 | Bazarr or Seerr not answering (any HTTP answer below 500 counts as up) | their address | 1 hour |
+| File Kondo's Transcode tool failed to encode twice (it won't try again on its own; the page has a Try again button) | Transcode results | straight away (checked again after each encode) |
 
 Why a day: anything that can sort itself out does so well within it. A new episode turns up
 within hours (RSS plus the 2-hour delay profile), and Kondo's Downloads tool clears a stuck

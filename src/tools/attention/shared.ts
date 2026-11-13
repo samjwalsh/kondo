@@ -10,6 +10,8 @@
  * - `service`: Bazarr or Seerr not answering.
  * - `unmatched`: a film or show Plex couldn't match (no poster or details), e.g. because Plex
  *   couldn't reach its servers when it was added. Plex never retries on its own.
+ * - `transcode`: a file Kondo's Transcode tool failed to encode twice and won't try again
+ *   on its own.
  */
 export type AttentionKind =
   | "not-found"
@@ -18,7 +20,8 @@ export type AttentionKind =
   | "import"
   | "health"
   | "service"
-  | "unmatched";
+  | "unmatched"
+  | "transcode";
 
 export interface AttentionItem {
   key: string;

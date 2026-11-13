@@ -53,6 +53,11 @@ export interface VideoInfo {
   kbps: number | null;
   /** True when the bitrate was worked out from the file size rather than read. */
   kbpsEstimated: boolean;
+  /**
+   * The video track's own length in seconds, when the file records it. The file's overall length
+   * can be longer: a subtitle cue running past the end of the picture stretches it.
+   */
+  durationS: number | null;
 }
 
 export interface AudioInfo {

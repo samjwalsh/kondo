@@ -14,6 +14,7 @@ import {
   combineCrops,
   type EncodePayload,
   isDecodeProblem,
+  lengthMismatch,
   parseCropLine,
   runEncode,
 } from "../../src/tools/transcode/encode.js";
@@ -120,6 +121,46 @@ describe("black bars", () => {
     expect(combineCrops([{ width: 1920, height: 1076, x: 0, y: 2 }], 1920, 1080)).toBeNull();
     expect(combineCrops([{ width: 1920, height: 200, x: 0, y: 440 }], 1920, 1080)).toBeNull();
     expect(combineCrops([], 1920, 1080)).toBeNull();
+  });
+});
+
+describe("length check", () => {
+  // Modelled on a Blu-ray episode whose Czech subtitle runs 40 s past the picture: the file says
+  // 4899 s, the video and audio 4850 s. The result drops that subtitle and is 4850 s.
+  const source = extractMediaInfo(
+    probe(
+      [
+        video("hevc", 1920, 1080, { tags: { DURATION: "01:20:50.012000000" } }),
+        audio("eac3", 8, "eng", "Main Episode", { tags: { DURATION: "01:20:50.016000000" } }),
+        subtitle("subrip", "eng", "English"),
+        subtitle("subrip", "cze", "Čeština", { tags: { DURATION: "01:21:30.002000000" } }),
+      ],
+      { duration: "4898.553000" },
+    ),
+  );
+  const result = (videoLength: string, fileLength: string) =>
+    extractMediaInfo(
+      probe([video("hevc", 1920, 1080, { tags: { DURATION: videoLength } })], {
+        duration: fileLength,
+      }),
+    );
+
+  it("compares the video tracks, not the file lengths a long subtitle stretches", () => {
+    expect(source.video?.durationS).toBeCloseTo(4850.012);
+    expect(lengthMismatch(source, result("01:20:50.042000000", "4850.042"))).toBeNull();
+  });
+
+  it("still catches a result that's really shorter", () => {
+    expect(lengthMismatch(source, result("01:10:00.000000000", "4200"))).toBe(
+      "The video is 4200 s long, the original 4850 s",
+    );
+  });
+
+  it("falls back to the file lengths when a track doesn't record its length", () => {
+    const bare = extractMediaInfo(probe([video("hevc", 1920, 1080)], { duration: "4200" }));
+    expect(bare.video?.durationS).toBeNull();
+    expect(lengthMismatch(source, bare)).toBe("It's 4200 s long, the original 4899 s");
+    expect(lengthMismatch({ ...source, durationS: 4201 }, bare)).toBeNull();
   });
 });
 

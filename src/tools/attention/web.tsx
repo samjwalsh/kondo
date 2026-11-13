@@ -14,6 +14,7 @@ const KIND_LABELS: Record<AttentionKind, string> = {
   health: "Sonarr/Radarr warnings",
   service: "Not answering",
   unmatched: "Not matched in Plex",
+  transcode: "Transcode gave up",
 };
 
 const checkFinished = (event: { type: string; job?: { tool: string; state: string } }) =>
@@ -29,6 +30,18 @@ export function AttentionPage() {
   const [message, setMessage] = useState<string | null>(null);
   const due = new Set(s?.due.map((i) => i.key));
   const kinds = Object.keys(KIND_LABELS) as AttentionKind[];
+
+  const tryAgain = async (item: AttentionItem) => {
+    setMessage(null);
+    const fileId = item.key.split(":").pop();
+    try {
+      await api.post(`/api/tools/transcode/files/${fileId}/retry`);
+      await api.post("/api/tools/attention/check");
+      setMessage(`${item.what} will be encoded again in its turn.`);
+    } catch (e) {
+      setMessage((e as Error).message);
+    }
+  };
 
   const checkNow = async () => {
     setMessage(null);
@@ -52,7 +65,8 @@ export function AttentionPage() {
         Things that don't fail loudly but never sort themselves out. Kondo checks every hour and
         reports only problems that have lasted (missing items and stuck downloads after{" "}
         {s?.stuckDays ?? 1} day(s), failed imports, warnings and items Plex couldn't match after{" "}
-        {s?.stuckHours ?? 6} hours), at the top of the morning summary.
+        {s?.stuckHours ?? 6} hours, files Transcode gave up on straight away), at the top of the
+        morning summary.
       </p>
       {message && <p className="muted small">{message}</p>}
       {s && (
@@ -96,6 +110,11 @@ export function AttentionPage() {
                         </span>
                       </div>
                       {i.detail && <p className="muted small log-detail">{i.detail}</p>}
+                      {i.kind === "transcode" && (
+                        <button type="button" className="small" onClick={() => void tryAgain(i)}>
+                          Try again
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>
