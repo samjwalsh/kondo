@@ -27,7 +27,7 @@ export interface EncodeOptions {
   info: MediaInfo;
   plan: Plan;
   crop: Crop | null;
-  /** `remux`: copy the video, only remove tracks. */
+  /** `remux`: copy the video; only remove tracks and convert audio. */
   encoder: Encoder;
   cpuThreads: number;
   /** x265 speed preset; tests use a fast one. */
@@ -145,14 +145,14 @@ export function buildEncodeArgs(o: EncodeOptions): string[] {
   audio.forEach((t, n) => {
     const a = o.info.audio.find((x) => x.index === t.index);
     if (!a) throw new Error(`Audio track ${t.index} is missing`);
-    // The plan decides: a remux plan keeps every audio track as it is.
+    // The plan decides which tracks are copied as they are.
     const target = t.action === "keep" ? ({ copy: true } as const) : audioTarget(a);
     if (target.copy) {
       args.push(`-c:a:${n}`, "copy");
     } else {
       args.push(
         `-c:a:${n}`,
-        "eac3",
+        "aac",
         `-b:a:${n}`,
         `${target.kbps}k`,
         `-ac:a:${n}`,
@@ -347,6 +347,15 @@ export async function verifyOutput(
     problems.push(`The video is ${out.video?.codec ?? "missing"}, not ${videoCodec}`);
   if (out.audio.length !== expected.audio) {
     problems.push(`${out.audio.length} audio track(s), expected ${expected.audio}`);
+  } else {
+    kept
+      .filter((t) => t.kind === "audio")
+      .forEach((t, n) => {
+        const a = out.audio[n];
+        if (t.action === "convert" && a && (a.codec !== "aac" || a.channels > 2)) {
+          problems.push(`Audio track ${n + 1} is ${a.codec} ${a.channels}ch, not stereo AAC`);
+        }
+      });
   }
   if (out.subtitles.length !== expected.subtitles) {
     problems.push(`${out.subtitles.length} subtitle track(s), expected ${expected.subtitles}`);
@@ -508,7 +517,7 @@ export async function runEncode(
     const remux = job.payload.encoder === "remux";
     if (!file?.info?.video || !file.plan || file.decision !== (remux ? "remux" : "transcode")) {
       job.log(
-        `This file isn't marked for ${remux ? "removing audio tracks" : "transcoding"} any more; nothing to do`,
+        `This file isn't marked for ${remux ? "a remux" : "transcoding"} any more; nothing to do`,
       );
       return { status: "skipped" };
     }
@@ -568,7 +577,11 @@ export async function runEncode(
         cpuCrf,
         version: deps.version,
       });
-      job.log(remux ? "Copying without the dropped tracks" : `Encoding with ${encoderName}`);
+      job.log(
+        remux
+          ? "Copying the video; dropping and converting audio tracks"
+          : `Encoding with ${encoderName}`,
+      );
       const started = Date.now();
       const pausedAtStart = job.pausedMs();
       // Time actually spent encoding: frozen spells (someone watching) don't count.

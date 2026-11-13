@@ -536,7 +536,8 @@ function Summary({
   }
   const saving = s.toTranscode.bytes - s.toTranscode.estimatedBytes;
   const skipped = s.byReason.filter(
-    (r) => !["h264", "old-codec", "h265-high-bitrate", "foreign-audio"].includes(r.code),
+    (r) =>
+      !["h264", "old-codec", "h265-high-bitrate", "foreign-audio", "audio-compat"].includes(r.code),
   );
   return (
     <>
@@ -560,9 +561,11 @@ function Summary({
         </div>
         {s.toRemux.count > 0 && (
           <button type="button" className="tile" onClick={() => onPick("remux")}>
-            <span className="tile-label">Other-language audio</span>
+            <span className="tile-label">Audio to fix</span>
             <strong>{count(s.toRemux.count)}</strong>
-            <span className="muted">to remove; the video stays as it is</span>
+            <span className="muted">
+              to convert to stereo AAC or remove; the video stays as it is
+            </span>
           </button>
         )}
         {s.done.count > 0 && (
