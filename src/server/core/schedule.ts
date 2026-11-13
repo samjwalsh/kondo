@@ -103,6 +103,22 @@ export const encodingSettings: SettingsSection = {
       max: 4,
       help: "One x265 encode of a 1080p file keeps only about 11 threads busy, so with more threads than that, two at once get through the work faster.",
     },
+    {
+      key: "cpuWhileWatching",
+      label: "Keep CPU encoding while someone watches",
+      type: "boolean",
+      default: false,
+      help: "Instead of freezing, one CPU encode carries on, held to a few CPUs (below) so Plex, the host and its containers keep the rest. Any other CPU encodes freeze until nobody is watching. Still pauses while Plex itself transcodes on the CPU.",
+    },
+    {
+      key: "cpuWatchingCpus",
+      label: "CPUs for that encode while someone watches",
+      type: "number",
+      default: 8,
+      min: 1,
+      max: 256,
+      help: "It gets the highest-numbered CPUs, e.g. 8 = CPUs 24–31 on a 32-thread machine: four whole cores sharing one cache on a Ryzen.",
+    },
     { key: "ffmpegPath", label: "ffmpeg", type: "string", default: "ffmpeg" },
     { key: "ffprobePath", label: "ffprobe", type: "string", default: "ffprobe" },
   ],
@@ -122,6 +138,8 @@ export function cpuThreadsPerEncode(encoding: Record<string, unknown>): number {
 export interface SlotDecision {
   allowed: boolean;
   reason: string;
+  /** Allowed, but only one job at a time, held to this many CPUs. */
+  limit?: { cpus: number };
 }
 
 /** The clock time (minutes after midnight) in a time zone. */
@@ -158,6 +176,8 @@ export interface SlotInputs {
   window: string;
   idleMode: boolean;
   idleQuietMinutes: number;
+  /** CPU slot only: keep going, limited, while someone watches (null = freeze as before). */
+  whileWatching?: { cpus: number } | null;
   plex: {
     configured: boolean;
     reachable: boolean;
@@ -181,6 +201,12 @@ export function decideSlot(slot: "gpu" | "cpu", input: SlotInputs): SlotDecision
   if (!plex.reachable) {
     return { allowed: false, reason: "Can't reach Plex, so assuming someone is watching" };
   }
+  const watching = slot === "cpu" ? (input.whileWatching ?? null) : null;
+  const limited = (why: string): SlotDecision => ({
+    allowed: true,
+    reason: `${why}: one encode on ${watching?.cpus} CPUs`,
+    limit: { cpus: watching?.cpus ?? 1 },
+  });
   if (input.inWindow || input.force) {
     if (slot === "gpu" && plex.gpuTranscoding) {
       return { allowed: false, reason: "Paused while Plex transcodes on the GPU" };
@@ -188,6 +214,7 @@ export function decideSlot(slot: "gpu" | "cpu", input: SlotInputs): SlotDecision
     if (slot === "cpu" && plex.cpuTranscoding) {
       return { allowed: false, reason: "Paused while Plex transcodes on the CPU" };
     }
+    if (watching && plex.sessions > 0) return limited("Someone is watching");
     return {
       allowed: true,
       reason: input.inWindow ? `Night window (${input.window})` : "Started by hand",
@@ -195,9 +222,17 @@ export function decideSlot(slot: "gpu" | "cpu", input: SlotInputs): SlotDecision
   }
   if (!input.idleMode)
     return { allowed: false, reason: `Outside the night window (${input.window})` };
-  if (plex.sessions > 0) return { allowed: false, reason: "Paused: someone is watching" };
+  if (watching) {
+    if (plex.cpuTranscoding) {
+      return { allowed: false, reason: "Paused while Plex transcodes on the CPU" };
+    }
+    if (plex.sessions > 0) return limited("Someone is watching");
+  } else if (plex.sessions > 0) {
+    return { allowed: false, reason: "Paused: someone is watching" };
+  }
   const remaining = input.idleQuietMinutes * 60_000 - plex.quietForMs;
   if (remaining > 0) {
+    if (watching) return limited("Plex was just in use");
     return {
       allowed: false,
       reason: `Plex is idle; starting in ${Math.ceil(remaining / 60_000)} min if it stays quiet`,
@@ -283,6 +318,10 @@ export class Scheduler {
       window: `${info.windowStart}–${info.windowEnd}`,
       idleMode: info.idleMode,
       idleQuietMinutes: info.idleQuietMinutes,
+      whileWatching:
+        slot === "cpu" && encoding.cpuWhileWatching
+          ? { cpus: Math.max(1, Math.floor(Number(encoding.cpuWatchingCpus) || 1)) }
+          : null,
       plex: {
         configured: activity.configured,
         reachable: activity.reachable,

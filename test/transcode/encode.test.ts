@@ -221,6 +221,7 @@ function fakeJob(payload: EncodePayload): JobContext<EncodePayload> {
     signal: new AbortController().signal,
     progress: () => {},
     log: () => {},
+    pausedMs: () => 0,
     checkpoint: async () => {},
     run: (command, args, options) => runProcess(command, args, options),
   };

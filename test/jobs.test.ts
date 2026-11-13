@@ -135,6 +135,47 @@ describe("job queue", () => {
     expect(queue.get(job.id)?.logs.map((l) => l.message)).toContain("Resumed");
   });
 
+  it("under a limit runs only the oldest job, held to fewer CPUs, and frees it after", async () => {
+    const { db } = setup();
+    const queue = new JobQueue(db, new EventBus(), log, [
+      { id: "cpu", label: "CPU", concurrency: 2 },
+    ]);
+    queues.push(queue);
+    let limit: { cpus: number } | undefined;
+    queue.setPolicy(() => ({ allowed: true, reason: "test", limit }));
+    const affinity: [number, number | null][] = [];
+    queue.setAffinitySetter((pid, cpus) => affinity.push([pid, cpus]));
+    queue.define("t", "sleep", {
+      slot: "cpu",
+      title: () => "sleep",
+      run: async (ctx) => {
+        await ctx.run(process.execPath, ["-e", "setTimeout(() => {}, 300)"]);
+        return ctx.pausedMs();
+      },
+    });
+    queue.start(20);
+    const a = queue.enqueue("t", "sleep", {});
+    const b = queue.enqueue("t", "sleep", {});
+    await waitFor(() => state(queue, a.id) === "running" && state(queue, b.id) === "running");
+    limit = { cpus: 8 };
+    queue.tick();
+    expect(state(queue, a.id)).toBe("running");
+    expect(state(queue, b.id)).toBe("paused");
+    expect(affinity).toEqual([[expect.any(Number), 8]]);
+    // A third job doesn't start while the limit holds.
+    const c = queue.enqueue("t", "sleep", {});
+    await new Promise((r) => setTimeout(r, 100));
+    expect(state(queue, c.id)).toBe("queued");
+    limit = undefined;
+    queue.tick();
+    expect(state(queue, b.id)).toBe("running");
+    expect(affinity.at(-1)?.[1]).toBeNull();
+    await waitFor(() => state(queue, c.id) === "succeeded");
+    // The frozen spell is reported, so speed figures can leave it out.
+    expect(Number(queue.get(b.id)?.result)).toBeGreaterThanOrEqual(90);
+    expect(queue.get(a.id)?.logs.map((l) => l.message)).toContain("Held to 8 CPUs");
+  });
+
   it("cancels a running child process", async () => {
     const { queue } = setup();
     queue.define("t", "sleep", {

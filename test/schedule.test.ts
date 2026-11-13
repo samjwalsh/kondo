@@ -95,6 +95,49 @@ describe("slot decisions", () => {
   });
 });
 
+describe("CPU encodes while someone watches", () => {
+  const watching = { whileWatching: { cpus: 8 } };
+
+  it("keeps one CPU encode going on a few CPUs instead of freezing", () => {
+    const idle = { ...watching, inWindow: false, idleMode: true };
+    const d = decideSlot("cpu", inputs(idle, { sessions: 1 }));
+    expect(d).toMatchObject({ allowed: true, limit: { cpus: 8 } });
+    expect(d.reason).toMatch(/one encode on 8 CPUs/);
+    // Also during Plex's quiet spell after watching, instead of waiting.
+    expect(decideSlot("cpu", inputs(idle, { quietForMs: 60_000 })).limit).toEqual({ cpus: 8 });
+    // Full speed once Plex has been quiet long enough.
+    const free = decideSlot("cpu", inputs(idle, { quietForMs: 15 * 60_000 }));
+    expect(free).toMatchObject({ allowed: true });
+    expect(free.limit).toBeUndefined();
+  });
+
+  it("limits in the night window too, and only while someone watches", () => {
+    expect(decideSlot("cpu", inputs(watching, { sessions: 2 })).limit).toEqual({ cpus: 8 });
+    expect(decideSlot("cpu", inputs(watching)).limit).toBeUndefined();
+  });
+
+  it("still pauses while Plex transcodes on the CPU", () => {
+    const plex = { sessions: 1, cpuTranscoding: true };
+    expect(decideSlot("cpu", inputs(watching, plex)).allowed).toBe(false);
+    const idle = { ...watching, inWindow: false, idleMode: true };
+    expect(decideSlot("cpu", inputs(idle, plex)).allowed).toBe(false);
+  });
+
+  it("doesn't run outside the window without idle mode, or touch the GPU slot", () => {
+    expect(
+      decideSlot("cpu", inputs({ ...watching, inWindow: false }, { sessions: 1 })).allowed,
+    ).toBe(false);
+    const idle = { ...watching, inWindow: false, idleMode: true };
+    expect(decideSlot("gpu", inputs(idle, { sessions: 1 })).allowed).toBe(false);
+  });
+
+  it("freezes as before when the setting is off", () => {
+    const idle = { inWindow: false, idleMode: true, whileWatching: null };
+    expect(decideSlot("cpu", inputs(idle, { sessions: 1 })).allowed).toBe(false);
+    expect(decideSlot("cpu", inputs({}, { sessions: 1 })).limit).toBeUndefined();
+  });
+});
+
 describe("CPU encodes", () => {
   it("splits the threads evenly between the encodes", () => {
     expect(cpuThreadsPerEncode({ cpuThreads: 28, cpuEncodes: 2 })).toBe(14);

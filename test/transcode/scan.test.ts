@@ -88,6 +88,7 @@ function fakeJob(): JobContext<unknown> & { logs: string[] } {
     logs,
     progress: () => {},
     log: (message) => void logs.push(message),
+    pausedMs: () => 0,
     checkpoint: async () => {},
     run: (command, args, options) => runProcess(command, args, options),
   };

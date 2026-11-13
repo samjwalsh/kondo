@@ -19,6 +19,7 @@ const job = {
   signal: new AbortController().signal,
   progress: () => {},
   log: () => {},
+  pausedMs: () => 0,
   checkpoint: async () => {},
   run: () => Promise.reject(new Error("no processes")),
 } as JobContext<unknown>;

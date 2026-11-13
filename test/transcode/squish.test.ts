@@ -29,6 +29,7 @@ function fakeJob<P>(payload: P): JobContext<P> & { logs: string[] } {
     logs,
     progress: () => {},
     log: (message) => void logs.push(message),
+    pausedMs: () => 0,
     checkpoint: async () => {},
     run: () => Promise.reject(new Error("no processes here")),
   };
