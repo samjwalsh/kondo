@@ -5,9 +5,8 @@
  * - `failed`: sending failed; retried on later checks until `attempts` reaches the limit.
  * - `skipped`: no email address, so nobody to tell.
  * - `before`: was already ready when Kondo started watching, so no email.
- * - `dismissed`: Sam chose "Don't email" (e.g. an old request someone has forgotten about).
  */
-export type NoticeStatus = "sent" | "failed" | "skipped" | "before" | "dismissed";
+export type NoticeStatus = "sent" | "failed" | "skipped" | "before";
 
 export interface Notice {
   requestId: number;

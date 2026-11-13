@@ -118,38 +118,6 @@ export default defineTool({
         "/waiting",
         async () => JSON.parse(store.meta("waitingList") ?? "[]") as WaitingRequest[],
       );
-      app.get("/dismissed", async () => store.dismissed());
-      // "Don't email": the request is never emailed about (it must be in the waiting list).
-      app.post<{ Params: { id: string } }>("/requests/:id/dismiss", async (request, reply) => {
-        const id = Number(request.params.id);
-        const list = JSON.parse(store.meta("waitingList") ?? "[]") as WaitingRequest[];
-        const w = list.find((x) => x.requestId === id);
-        if (!w) return reply.code(404).send({ error: "That request isn't waiting" });
-        store.save({
-          requestId: id,
-          at: new Date().toISOString(),
-          status: "dismissed",
-          type: w.type,
-          title: w.title,
-          detail: w.reason,
-          user: w.user,
-          attempts: 0,
-          error: null,
-        });
-        store.setMeta("waitingList", JSON.stringify(list.filter((x) => x.requestId !== id)));
-        store.setMeta("waiting", String(list.length - 1));
-        return { ok: true };
-      });
-      // Undo: the next check treats it like any other request again.
-      app.post<{ Params: { id: string } }>("/requests/:id/undismiss", async (request, reply) => {
-        const id = Number(request.params.id);
-        if (store.get(id)?.status !== "dismissed") {
-          return reply.code(404).send({ error: "That request isn't dismissed" });
-        }
-        store.remove(id);
-        check();
-        return { ok: true };
-      });
       app.post("/check", async (_request, reply) => {
         const gaps = missing();
         if (gaps.length > 0) {
