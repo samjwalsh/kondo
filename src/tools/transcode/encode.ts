@@ -554,6 +554,10 @@ export async function runEncode(
       });
       job.log(remux ? "Copying without the dropped tracks" : `Encoding with ${encoderName}`);
       const started = Date.now();
+      const pausedAtStart = job.pausedMs();
+      // Time actually spent encoding: frozen spells (someone watching) don't count.
+      const activeMs = () => Date.now() - started - (job.pausedMs() - pausedAtStart);
+      let frames = 0;
       const totalUs = file.info.durationS * 1_000_000;
       const fpsSamples: number[] = [];
       const live = { fps: 0, speed: "" };
@@ -562,7 +566,9 @@ export async function runEncode(
         nice: encoder === "gpu" ? 10 : 19,
         onStdoutLine: (line) => {
           const [key, value = ""] = line.split("=");
-          if (key === "fps") {
+          if (key === "frame") {
+            frames = Number(value) || frames;
+          } else if (key === "fps") {
             live.fps = Number(value) || 0;
             if (live.fps > 0) fpsSamples.push(live.fps);
           } else if (key === "speed") {
@@ -573,8 +579,7 @@ export async function runEncode(
             totalUs > 0
           ) {
             const fraction = Math.min(1, Number(value) / totalUs);
-            const left =
-              fraction > 0.01 ? ((Date.now() - started) / fraction) * (1 - fraction) : null;
+            const left = fraction > 0.01 ? (activeMs() / fraction) * (1 - fraction) : null;
             job.progress(
               fraction,
               [
@@ -593,7 +598,7 @@ export async function runEncode(
           `ffmpeg failed: ${result.stderrTail.slice(-3).join(" | ") || `exit code ${result.code}`}`,
         );
       }
-      const encodeSeconds = Math.round((Date.now() - started) / 1000);
+      const encodeSeconds = Math.max(1, Math.round(activeMs() / 1000));
       const outputBytes = (await stat(output)).size;
 
       job.progress(null, "Checking the result…");
@@ -614,9 +619,11 @@ export async function runEncode(
         encoder: encoderName,
         encodeSeconds,
         averageFps:
-          fpsSamples.length > 0
-            ? Math.round(fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length)
-            : null,
+          frames > 0
+            ? Math.round(frames / encodeSeconds)
+            : fpsSamples.length > 0
+              ? Math.round(fpsSamples.reduce((a, b) => a + b, 0) / fpsSamples.length)
+              : null,
         crop: crop
           ? `${file.info.video.width}×${file.info.video.height} → ${crop.width}×${crop.height}`
           : null,

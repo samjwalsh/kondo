@@ -44,6 +44,7 @@ function fakeJob(
     logs,
     progress: () => {},
     log: (message) => void logs.push(message),
+    pausedMs: () => 0,
     checkpoint: async () => {
       if (options.cancelOnCopy) {
         controller.abort("cancel");

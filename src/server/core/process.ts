@@ -83,3 +83,16 @@ export function runProcess(
     });
   });
 }
+
+/**
+ * Holds a process and all its threads to the highest-numbered `cpus` CPUs, or frees it to all
+ * of them with null. Best effort: without `taskset` the process just keeps every CPU.
+ */
+export function setCpuAffinity(pid: number, cpus: number | null): void {
+  const total = os.cpus().length;
+  const n = cpus === null ? total : Math.max(1, Math.min(cpus, total));
+  const child = spawn("taskset", ["-a", "-p", "-c", `${total - n}-${total - 1}`, String(pid)], {
+    stdio: "ignore",
+  });
+  child.on("error", () => {});
+}

@@ -261,6 +261,15 @@ video bitrate of p10 0.9 · median **1.5** · p90 2.4 · max 3.5 Mb/s.
   had no sessions at all for 15 minutes. The moment anyone starts playing anything,
   every running encode is frozen (paused in place, using no CPU or GPU) and resumes
   after another 15 quiet minutes. Nothing is lost by pausing.
+- **CPU encoding while someone watches (opt-in, `cpuWhileWatching`)**: instead of
+  freezing, the oldest CPU encode carries on, held (CPU affinity, `taskset`) to the
+  highest-numbered `cpuWatchingCpus` CPUs (default 8 = one 4-core cache group on a
+  Ryzen); other CPU encodes freeze. This applies in the window too, and during the
+  quiet minutes after playback. Lowest priority alone isn't enough: it only counts
+  inside the VM, while the host sees every busy vCPU as a normal thread competing
+  with containers, the file share and the VM's own I/O. Still pauses while Plex
+  transcodes on the CPU. Swaps never touch a file someone is playing either way.
+- Encode speed (and the backlog estimate built on it) leaves out time spent frozen.
 - Plex activity comes from Plex's live notification stream (near-instant), with
   polling every 10 s as a fallback; if Plex can't be reached, Kondo assumes it is
   busy.

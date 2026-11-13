@@ -11,7 +11,7 @@ import type {
 } from "../../shared/api.js";
 import type { Db } from "./db.js";
 import type { EventBus } from "./events.js";
-import { type RunOptions, type RunResult, runProcess } from "./process.js";
+import { type RunOptions, type RunResult, runProcess, setCpuAffinity } from "./process.js";
 import type { SlotDecision } from "./schedule.js";
 
 export class JobCancelledError extends Error {
@@ -29,6 +29,8 @@ export interface JobContext<P> {
   log(message: string, level?: JobLogLine["level"]): void;
   /** Waits while the job is paused; throws JobCancelledError once it's cancelled. */
   checkpoint(): Promise<void>;
+  /** How long the job has spent frozen so far, in ms (to leave out of speed figures). */
+  pausedMs(): number;
   /** Runs a child process that is frozen, resumed and stopped together with the job. */
   run(command: string, args: string[], options?: Omit<RunOptions, "register">): Promise<RunResult>;
 }
@@ -61,7 +63,12 @@ function concurrencyOf(slot: SlotConfig): number {
 
 export type SlotPolicy = (slot: SlotId, force: boolean) => SlotDecision;
 
+/** Holds a process (all its threads) to `cpus` CPUs, or frees it again with null. */
+export type AffinitySetter = (pid: number, cpus: number | null) => void;
+
 const MAX_ATTEMPTS = 3;
+/** Threads a process creates while its CPU limit is being set can miss it; set it again this often. */
+const AFFINITY_REFRESH_MS = 30_000;
 const PROGRESS_WRITE_MS = 1000;
 const KEEP_FINISHED_DAYS = 30;
 const MAX_LOG_LINES = 500;
@@ -95,6 +102,12 @@ class ActiveJob {
   readonly controller = new AbortController();
   readonly processes = new Set<ChildProcess>();
   paused = false;
+  /** The CPU limit applied to its processes (null = all CPUs). */
+  cpus: number | null = null;
+  /** When the CPU limit was last applied (0 = never touched, so nothing to refresh). */
+  cpusAppliedAt = 0;
+  private pausedSince = 0;
+  private pausedTotal = 0;
   stopReason: "cancel" | "shutdown" | null = null;
   pendingProgress: { fraction: number | null; text: string | null } | null = null;
   progressTimer: NodeJS.Timeout | null = null;
@@ -109,12 +122,14 @@ class ActiveJob {
   pause(): void {
     if (this.paused) return;
     this.paused = true;
+    this.pausedSince = Date.now();
     for (const p of this.processes) p.kill("SIGSTOP");
   }
 
   resume(): void {
     if (!this.paused) return;
     this.paused = false;
+    this.pausedTotal += Date.now() - this.pausedSince;
     for (const p of this.processes) p.kill("SIGCONT");
     const waiters = this.waiters;
     this.waiters = [];
@@ -131,6 +146,10 @@ class ActiveJob {
       p.kill("SIGTERM");
       setTimeout(() => p.exitCode === null && p.kill("SIGKILL"), 10_000).unref();
     }
+  }
+
+  pausedMs(): number {
+    return this.pausedTotal + (this.paused ? Date.now() - this.pausedSince : 0);
   }
 
   async checkpoint(): Promise<void> {
@@ -150,6 +169,7 @@ export class JobQueue {
   private tickQueued = false;
   private stopped = true;
   private policy: SlotPolicy = () => ({ allowed: true, reason: "" });
+  private setAffinity: AffinitySetter = setCpuAffinity;
 
   constructor(
     private readonly db: Db,
@@ -160,6 +180,11 @@ export class JobQueue {
 
   setPolicy(policy: SlotPolicy): void {
     this.policy = policy;
+  }
+
+  /** For tests: replaces the real CPU-affinity call. */
+  setAffinitySetter(setter: AffinitySetter): void {
+    this.setAffinity = setter;
   }
 
   define<P, R>(tool: string, type: string, def: JobType<P, R>): void {
@@ -348,7 +373,7 @@ export class JobQueue {
         .map(({ logs: _logs, ...job }) => job);
       return {
         ...slot,
-        concurrency: concurrencyOf(slot),
+        concurrency: decision.allowed && decision.limit ? 1 : concurrencyOf(slot),
         allowed: decision.allowed,
         reason: decision.reason,
         jobs,
@@ -368,17 +393,31 @@ export class JobQueue {
 
   tick(): void {
     if (this.stopped) return;
-    // Freeze or wake running jobs as the rules change.
-    for (const active of this.active.values()) {
+    // Freeze or wake running jobs as the rules change. Under a limit, only the oldest job of the
+    // slot keeps going (held to fewer CPUs); the others freeze until the limit lifts.
+    const limitedRunner = new Map<SlotId, number>();
+    for (const active of [...this.active.values()].sort((a, b) => a.id - b.id)) {
       if (active.stopReason) continue;
       const decision = this.policy(active.slot, active.force);
-      if (!decision.allowed && !active.paused) {
+      let allowed = decision.allowed;
+      let reason = decision.reason;
+      if (allowed && decision.limit) {
+        if (limitedRunner.has(active.slot)) {
+          allowed = false;
+          reason = `${reason}; this one waits its turn`;
+        } else {
+          limitedRunner.set(active.slot, active.id);
+        }
+      }
+      // A frozen job keeps its CPUs as they were; they're set again before it wakes.
+      if (allowed) this.applyCpuLimit(active, decision.limit ? decision.limit.cpus : null);
+      if (!allowed && !active.paused) {
         active.pause();
         // Save the last progress now so the frozen job shows where it really stopped.
         this.flushProgress(active);
         this.setState(active.id, "paused");
-        this.addLog(active.id, `Paused: ${decision.reason}`);
-      } else if (decision.allowed && active.paused) {
+        this.addLog(active.id, `Paused: ${reason}`);
+      } else if (allowed && active.paused) {
         active.resume();
         this.setState(active.id, "running");
         this.addLog(active.id, "Resumed");
@@ -396,10 +435,29 @@ export class JobQueue {
         .all(slot.id);
       for (const row of candidates) {
         if (busy >= concurrency) break;
-        if (!this.policy(slot.id, Boolean(row.force)).allowed) continue;
+        const decision = this.policy(slot.id, Boolean(row.force));
+        if (!decision.allowed) continue;
+        // Under a limit only one job runs; frozen ones still count.
+        if (decision.limit && busy >= 1) continue;
         this.startJob(row);
         busy++;
       }
+    }
+  }
+
+  /** Holds a job's processes to `cpus` CPUs (null = all), logging when that changes. */
+  private applyCpuLimit(active: ActiveJob, cpus: number | null): void {
+    const changed = active.cpus !== cpus;
+    const refresh =
+      active.cpusAppliedAt > 0 && Date.now() - active.cpusAppliedAt >= AFFINITY_REFRESH_MS;
+    if (!changed && !refresh) return;
+    active.cpus = cpus;
+    active.cpusAppliedAt = Date.now();
+    for (const p of active.processes) {
+      if (p.pid !== undefined && p.exitCode === null) this.setAffinity(p.pid, cpus);
+    }
+    if (changed) {
+      this.addLog(active.id, cpus === null ? "Back on all CPUs" : `Held to ${cpus} CPUs`);
     }
   }
 
@@ -465,12 +523,17 @@ export class JobQueue {
       },
       log: (message, level = "info") => this.addLog(active.id, message, level),
       checkpoint: () => active.checkpoint(),
+      pausedMs: () => active.pausedMs(),
       run: (command, args, options = {}) => {
         if (active.controller.signal.aborted) return Promise.reject(new JobCancelledError());
         return runProcess(command, args, {
           ...options,
           register: (child) => {
             active.processes.add(child);
+            if (active.cpus !== null && child.pid !== undefined) {
+              this.setAffinity(child.pid, active.cpus);
+              active.cpusAppliedAt = Date.now();
+            }
             if (active.paused) child.kill("SIGSTOP");
             return () => active.processes.delete(child);
           },
