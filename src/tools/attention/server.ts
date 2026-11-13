@@ -1,5 +1,6 @@
 import { defineTool } from "../../server/core/tools.js";
 import { type SettingsSection, splitLines } from "../../shared/settings.js";
+import { gaveUpFiles } from "../transcode/store.js";
 import { attentionStatus, runCheck, summaryLines } from "./check.js";
 import { AttentionStore, migrations } from "./store.js";
 
@@ -51,7 +52,7 @@ export default defineTool({
   id: "attention",
   name: "Needs a look",
   description:
-    "Lists what needs a person: items never found, downloads stuck before import, Sonarr/Radarr warnings, Bazarr or Seerr down, films or shows Plex couldn't match.",
+    "Lists what needs a person: items never found, downloads stuck before import, Sonarr/Radarr warnings, Bazarr or Seerr down, films or shows Plex couldn't match, files Transcode gave up on.",
   settings: [attentionSettings],
   migrations,
 
@@ -73,6 +74,7 @@ export default defineTool({
           { app: "seerr", name: "Seerr", url: ctx.integrations.seerr.url() },
         ],
         plex: ctx.integrations.plex,
+        transcodeFailures: () => gaveUpFiles(ctx.db),
       });
 
     ctx.defineJob<Record<string, never>, { errors: string[] }>("check", {
@@ -94,6 +96,14 @@ export default defineTool({
     );
     ctx.events.subscribe((event) => {
       if (event.type === "settings.changed" && event.scope === "attention") enqueue();
+      // A failed encode, or one tried again, shows here without waiting for the hourly check.
+      if (
+        event.type === "job.updated" &&
+        event.job.tool === "transcode" &&
+        event.job.type === "encode" &&
+        (event.job.state === "failed" || event.job.state === "succeeded")
+      )
+        enqueue();
     });
 
     ctx.routes((app) => {

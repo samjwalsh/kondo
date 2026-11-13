@@ -28,6 +28,8 @@ export interface CheckDeps {
   ignoreHealth: string[];
   services: { app: string; name: string; url: string }[];
   plex?: Pick<PlexClient, "configured" | "unmatched">;
+  /** Files the Transcode tool gave up on. */
+  transcodeFailures?: () => { fileId: number; path: string; error: string | null }[];
   /** For tests. */
   ping?: (url: string) => Promise<void>;
   now?: () => number;
@@ -126,6 +128,23 @@ export async function runCheck(deps: CheckDeps): Promise<{ errors: string[] }> {
     deps.store.reconcile("plex:unmatched", [], at);
   }
 
+  if (deps.transcodeFailures) {
+    const failures = deps.transcodeFailures;
+    await source("transcode:failed", "Transcode results", async () =>
+      failures().map((f) => {
+        const name = f.path.split("/").pop() ?? f.path;
+        return {
+          id: String(f.fileId),
+          kind: "transcode" as const,
+          app: "transcode",
+          group: "Transcode",
+          what: name.replace(/\.[^.]+$/, ""),
+          detail: f.error,
+        };
+      }),
+    );
+  }
+
   for (const service of deps.services) {
     if (!service.url) {
       deps.store.reconcile(`${service.app}:up`, [], at);
@@ -171,6 +190,8 @@ export function isDue(
   if (item.kind === "not-found" || item.kind === "replace" || item.kind === "stalled")
     return age >= limits.stuckDays * 24 * HOUR;
   if (item.kind === "service") return age >= SERVICE_GRACE_MS;
+  // Kondo has already tried twice; waiting longer won't change anything.
+  if (item.kind === "transcode") return true;
   return age >= limits.stuckHours * HOUR;
 }
 
@@ -255,6 +276,15 @@ export function summaryLines(status: AttentionStatus): string[] {
   if (unmatched.length > 0) {
     lines.push(
       `• Not matched in Plex for ${status.stuckHours}+ h (⋯ → Match…): ${shortList(unmatched.map((i) => i.what))}`,
+    );
+  }
+  const transcode = of("transcode");
+  if (transcode.length > 0) {
+    lines.push(
+      `• Transcode failed twice, not trying again (Needs a look → Try again): ${shortList(
+        transcode.map((i) => `${i.what} (${clip(i.detail ?? "", 60)})`),
+        3,
+      )}`,
     );
   }
   for (const h of of("health")) lines.push(`• ${APP_NAMES[h.app] ?? h.app}: ${clip(h.what)}`);

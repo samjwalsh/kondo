@@ -165,6 +165,35 @@ const TO_ENCODE =
 const TO_REMUX =
   "f.decision = 'remux' AND (o.file_id IS NULL OR o.status IN ('squish', 'not-worth-it') OR (o.status = 'failed' AND o.attempts < 2))";
 
+/** A file Kondo stopped trying to encode after it failed twice. */
+export interface GaveUpFile {
+  fileId: number;
+  path: string;
+  error: string | null;
+}
+
+/**
+ * Files whose encode failed twice: Kondo doesn't try them again on its own. Read straight from
+ * the database so other tools can report them; empty if the Transcode tool has never run.
+ */
+export function gaveUpFiles(db: Db): GaveUpFile[] {
+  const exists = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcode_outcomes'")
+    .get();
+  if (!exists) return [];
+  return db
+    .prepare(
+      `SELECT f.id, f.path, o.error FROM transcode_outcomes o JOIN transcode_files f ON f.id = o.file_id
+       WHERE o.status = 'failed' AND o.attempts >= 2 ORDER BY o.updated_at`,
+    )
+    .all()
+    .map((r) => ({
+      fileId: Number(r.id),
+      path: String(r.path),
+      error: r.error === null ? null : String(r.error),
+    }));
+}
+
 /** Where a swap is copying to and replacing, recorded before anything in the library changes. */
 export interface SwapPaths {
   source: string;

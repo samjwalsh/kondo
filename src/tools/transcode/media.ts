@@ -22,6 +22,7 @@ export interface ProbeStream {
   color_transfer?: string;
   channels?: number;
   bit_rate?: string;
+  duration?: string;
   disposition?: Record<string, number>;
   tags?: Record<string, string>;
   side_data_list?: { side_data_type?: string }[];
@@ -73,6 +74,17 @@ function readKbps(stream: ProbeStream): number | null {
   const raw = stream.bit_rate ?? tag(stream.tags, "BPS") ?? tag(stream.tags, "BPS-eng");
   const n = raw ? Number(raw) : Number.NaN;
   return Number.isFinite(n) && n > 0 ? n / 1000 : null;
+}
+
+/** A stream's length in seconds, from the stream itself (MP4) or Matroska's DURATION tag. */
+export function streamSeconds(stream: ProbeStream): number | null {
+  const direct = Number(stream.duration);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const raw = tag(stream.tags, "DURATION") ?? tag(stream.tags, "DURATION-eng");
+  const m = raw?.match(/^(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$/);
+  if (!m) return null;
+  const seconds = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  return seconds > 0 ? seconds : null;
 }
 
 const flag = (s: ProbeStream, name: string) => (s.disposition?.[name] ?? 0) === 1;
@@ -187,6 +199,7 @@ export function extractMediaInfo(probe: Probe): MediaInfo {
       hdr: hdrOf(v),
       kbps: kbps === null ? null : Math.round(kbps),
       kbpsEstimated,
+      durationS: streamSeconds(v),
     };
   }
 

@@ -7,6 +7,7 @@ import { ArrClient, type MissingItem, type QueueProblem } from "../src/server/in
 import type { UnmatchedItem } from "../src/server/integrations/plex.js";
 import { attentionStatus, ping, runCheck, summaryLines } from "../src/tools/attention/check.js";
 import { AttentionStore, migrations } from "../src/tools/attention/store.js";
+import { gaveUpFiles, migrations as transcodeMigrations } from "../src/tools/transcode/store.js";
 import { tempDir } from "./helpers.js";
 
 const DAY = 86_400_000;
@@ -249,6 +250,66 @@ describe("items Plex couldn't match", () => {
     configured = false;
     await check();
     expect(store.items()).toEqual([]);
+  });
+});
+
+describe("files Transcode gave up on", () => {
+  it("reports them straight away, and forgets them once tried again", async () => {
+    const db = openDb(tempDir());
+    migrate(db, "core", coreMigrations);
+    migrate(db, "tool:attention", migrations);
+    const store = new AttentionStore(db);
+    let failures = [
+      {
+        fileId: 6383,
+        path: "/media/TV/Show/Season 1/Show S01E01 (1080p BluRay).mkv",
+        error: "The result failed its checks: It's 4850 s long, the original 4899 s",
+      },
+    ];
+    const check = () =>
+      runCheck({
+        store,
+        arrs: [],
+        ignoreHealth: [],
+        services: [],
+        transcodeFailures: () => failures,
+        now: () => T0,
+      });
+
+    await check();
+    const due = attentionStatus(store, LIMITS, T0).due;
+    expect(due).toMatchObject([
+      { key: "transcode:failed:6383", kind: "transcode", what: "Show S01E01 (1080p BluRay)" },
+    ]);
+    expect(summaryLines(attentionStatus(store, LIMITS, T0))[1]).toMatch(
+      /^• Transcode failed twice, not trying again .*: Show S01E01 \(1080p BluRay\) \(The result failed/,
+    );
+
+    failures = [];
+    await check();
+    expect(store.items()).toEqual([]);
+  });
+
+  it("reads them from the Transcode tool's tables, and copes with them not existing", () => {
+    const db = openDb(tempDir());
+    expect(gaveUpFiles(db)).toEqual([]);
+    migrate(db, "tool:transcode", transcodeMigrations);
+    const at = "2026-11-13T09:00:00Z";
+    const file = db.prepare(
+      `INSERT INTO transcode_files (id, path, root, size, mtime_ms, seen_at)
+       VALUES (?, ?, '/media', 1, 1, ?)`,
+    );
+    file.run(1, "/media/a.mkv", at);
+    file.run(2, "/media/b.mkv", at);
+    file.run(3, "/media/c.mkv", at);
+    const outcome = db.prepare(
+      `INSERT INTO transcode_outcomes (file_id, status, error, attempts, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    outcome.run(1, "failed", "twice", 2, at, at);
+    outcome.run(2, "failed", "once", 1, at, at);
+    outcome.run(3, "done", null, 0, at, at);
+    expect(gaveUpFiles(db)).toEqual([{ fileId: 1, path: "/media/a.mkv", error: "twice" }]);
   });
 });
 

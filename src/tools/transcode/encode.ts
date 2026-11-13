@@ -286,6 +286,26 @@ export function isDecodeProblem(line: string): boolean {
   return line.trim() !== "" && !line.startsWith("[null @");
 }
 
+/**
+ * Whether the result is a different length from the original. Compares the video tracks when
+ * both files record their length: the file's overall length also counts subtitle tracks, and a
+ * cue in a dropped subtitle that runs past the end of the picture makes the original look longer.
+ */
+export function lengthMismatch(
+  source: Pick<MediaInfo, "durationS" | "video">,
+  out: Pick<MediaInfo, "durationS" | "video">,
+): string | null {
+  const sourceVideo = source.video?.durationS ?? null;
+  const outVideo = out.video?.durationS ?? null;
+  const [a, b, what] =
+    sourceVideo !== null && outVideo !== null
+      ? [outVideo, sourceVideo, "The video is"]
+      : [out.durationS, source.durationS, "It's"];
+  const tolerance = Math.max(1, b * 0.005);
+  if (Math.abs(a - b) <= tolerance) return null;
+  return `${what} ${Math.round(a)} s long, the original ${Math.round(b)} s`;
+}
+
 export async function verifyOutput(
   job: JobContext<unknown>,
   tools: { ffmpeg: string; ffprobe: string },
@@ -321,12 +341,8 @@ export async function verifyOutput(
   }
   const out = extractMediaInfo(JSON.parse(lines.join("\n")) as Probe);
   const problems: string[] = [];
-  const tolerance = Math.max(1, source.durationS * 0.005);
-  if (Math.abs(out.durationS - source.durationS) > tolerance) {
-    problems.push(
-      `It's ${Math.round(out.durationS)} s long, the original ${Math.round(source.durationS)} s`,
-    );
-  }
+  const lengthProblem = lengthMismatch(source, out);
+  if (lengthProblem) problems.push(lengthProblem);
   if (out.video?.codec !== videoCodec)
     problems.push(`The video is ${out.video?.codec ?? "missing"}, not ${videoCodec}`);
   if (out.audio.length !== expected.audio) {
