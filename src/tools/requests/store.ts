@@ -20,6 +20,11 @@ export const migrations: Migration[] = [
       CREATE TABLE requests_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `,
   },
+  {
+    // "Don't email" is gone: requests nobody wants emailed about are deleted in Seerr instead.
+    version: 2,
+    sql: "DELETE FROM request_notices WHERE status = 'dismissed';",
+  },
 ];
 
 function toNotice(r: Record<string, unknown>): Notice {
@@ -83,26 +88,15 @@ export class RequestsStore {
     const rows = options.since
       ? this.db
           .prepare(
-            "SELECT * FROM request_notices WHERE status NOT IN ('before', 'dismissed') AND at >= ? ORDER BY at DESC LIMIT ?",
+            "SELECT * FROM request_notices WHERE status != 'before' AND at >= ? ORDER BY at DESC LIMIT ?",
           )
           .all(options.since, options.limit)
       : this.db
           .prepare(
-            "SELECT * FROM request_notices WHERE status NOT IN ('before', 'dismissed') ORDER BY at DESC LIMIT ?",
+            "SELECT * FROM request_notices WHERE status != 'before' ORDER BY at DESC LIMIT ?",
           )
           .all(options.limit);
     return rows.map(toNotice);
-  }
-
-  dismissed(): Notice[] {
-    return this.db
-      .prepare("SELECT * FROM request_notices WHERE status = 'dismissed' ORDER BY at DESC")
-      .all()
-      .map(toNotice);
-  }
-
-  remove(requestId: number): void {
-    this.db.prepare("DELETE FROM request_notices WHERE request_id = ?").run(requestId);
   }
 
   meta(key: string): string | null {

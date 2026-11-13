@@ -155,31 +155,6 @@ describe("request emails", () => {
     ]);
   });
 
-  it("never emails a dismissed request, and emails it again once undone", async () => {
-    const t = setup();
-    await t.check();
-    t.state.requests = [movieRequest(15, 3)];
-    await t.check();
-    t.store.save({
-      requestId: 15,
-      at: "2026-11-12T21:00:00Z",
-      status: "dismissed",
-      type: "movie",
-      title: "Film 115",
-      detail: null,
-      user: "Amy",
-      attempts: 0,
-      error: null,
-    });
-    t.state.requests = [movieRequest(15, 5)];
-    expect(await t.check()).toMatchObject({ sent: 0, waiting: 0 });
-    expect(t.store.dismissed()).toHaveLength(1);
-    expect(t.store.recent({ limit: 10 })).toHaveLength(0);
-
-    t.store.remove(15);
-    expect(await t.check()).toMatchObject({ sent: 1 });
-  });
-
   it("counts a complete season as ready without asking Plex", async () => {
     const t = setup();
     await t.check();
