@@ -61,7 +61,9 @@ export function IpsPage() {
       {scan?.docker.error && <p className="bad">{scan.docker.error}</p>}
       {clashes.length > 0 && (
         <p className="bad">
-          {clashes.map((c) => `${c.ip}: ${c.why}`).join(". ")}. Starting it would clash.
+          Address clash:{" "}
+          {clashes.map((c) => `${c.ip}${c.label ? ` (${c.label})` : ""}: ${c.why}`).join(". ")}.
+          Starting the stopped container would fail or knock the other off the network.
         </p>
       )}
 

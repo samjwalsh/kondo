@@ -40,6 +40,7 @@ describe("scanRange", () => {
         { name: "sonarr", running: true, ips: ["10.0.0.105"] },
         { name: "backrest", running: false, ips: ["10.0.0.106"] },
         { name: "old", running: false, ips: ["10.0.0.101"] },
+        { name: "tautulli", running: false, ips: ["10.0.0.105"] },
       ],
       probe: {
         ping: async (ip) => ip === "10.0.0.101",
@@ -56,13 +57,13 @@ describe("scanRange", () => {
       [102, "taken", "printer", false],
       [103, "free", null, false],
       [104, "taken", null, false],
-      [105, "taken", "sonarr", false],
+      [105, "taken", "sonarr", true],
       [106, "stopped", "backrest", false],
       [107, "free", null, false],
       [108, "free", null, false],
     ]);
     expect(scan.firstFree).toBe("10.0.0.103");
     expect(scan.freeCount).toBe(3);
-    expect(scan.docker).toEqual({ used: true, error: null, containers: 3 });
+    expect(scan.docker).toEqual({ used: true, error: null, containers: 4 });
   });
 });
