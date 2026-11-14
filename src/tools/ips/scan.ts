@@ -126,8 +126,18 @@ export async function scanRange(options: ScanOptions): Promise<IpScan> {
 
     if (ip === network.self)
       return { ...base, state: "taken", label: "Kondo", why: "this machine" };
-    if (running.length > 0)
-      return { ...base, state: "taken", label: names(running), why: "container, running" };
+    if (running.length > 0) {
+      // Starting a stopped container set to the same address would clash with this one.
+      return stopped.length > 0
+        ? {
+            ...base,
+            state: "taken",
+            label: names(running),
+            why: `container, running; stopped ${names(stopped)} is also set to it`,
+            clash: true,
+          }
+        : { ...base, state: "taken", label: names(running), why: "container, running" };
+    }
     if (answered) {
       return {
         ...base,
