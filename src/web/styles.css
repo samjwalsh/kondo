@@ -879,3 +879,17 @@ table.tracks .badge {
 .pill.outcome.not-worth-it {
   color: var(--warn);
 }
+
+/* Free IPs: the address itself, big and click-to-copy. */
+button.ip-big {
+  font:
+    600 2rem / 1.2 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: copy;
+}
