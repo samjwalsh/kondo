@@ -13,10 +13,31 @@ const BY: Record<TakenIp["by"], string> = {
   reserved: "listed in Settings",
 };
 
+interface Cell {
+  ip: string;
+  last: number;
+  taken: TakenIp | null;
+}
+
+/** Every address in the scanned range, in order. */
+function cells(scan: IpScan): Cell[] {
+  const prefix = scan.from.split(".").slice(0, 3).join(".");
+  const from = Number(scan.from.split(".")[3]);
+  const to = Number(scan.to.split(".")[3]);
+  const taken = new Map(scan.taken.map((t) => [t.ip, t]));
+  const out: Cell[] = [];
+  for (let n = from; n <= to; n++) {
+    const ip = `${prefix}.${n}`;
+    out.push({ ip, last: n, taken: taken.get(ip) ?? null });
+  }
+  return out;
+}
+
 export function IpsPage() {
   const { data: scan, error, reload } = useApi<IpScan>("/api/tools/ips/scan");
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   const rescan = async () => {
     setBusy(true);
@@ -30,10 +51,13 @@ export function IpsPage() {
 
   const copy = (ip: string) => {
     void navigator.clipboard?.writeText(ip).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+      setCopied(ip);
+      window.setTimeout(() => setCopied((c) => (c === ip ? null : c)), 1500);
     });
   };
+
+  const all = scan && !scan.error ? cells(scan) : [];
+  const shown = all.find((c) => c.ip === (picked ?? scan?.firstFree)) ?? null;
 
   return (
     <>
@@ -50,53 +74,61 @@ export function IpsPage() {
       </p>
       {error && <p className="bad">{error}</p>}
       {!scan && !error && <p className="muted">Scanning…</p>}
+      {scan?.error && <p className="bad">{scan.error}</p>}
 
-      {scan && (
-        <Card title="Lowest free address" actions={<Link to="/settings">Settings</Link>}>
-          {scan.error ? (
-            <p className="bad">{scan.error}</p>
-          ) : scan.firstFree ? (
-            <>
-              <p>
-                <button type="button" className="ip-big" onClick={() => copy(scan.firstFree ?? "")}>
-                  {scan.firstFree}
-                </button>{" "}
-                <span className="muted small">{copied ? "Copied" : "click to copy"}</span>
-              </p>
-              <p className="muted small">
-                {scan.freeCount} free between {scan.from} and {scan.to}. Scanned{" "}
-                {ago(scan.scannedAt)}.
-              </p>
-            </>
-          ) : (
-            <p className="bad">
-              Nothing free between {scan.from} and {scan.to}.
+      {scan && !scan.error && (
+        <Card title="Addresses" actions={<Link to="/settings">Settings</Link>}>
+          <p className="muted small">
+            {scan.freeCount} free between {scan.from} and {scan.to}
+            {scan.firstFree ? `, lowest ${scan.firstFree}` : ""}. Scanned {ago(scan.scannedAt)}.
+            Click a free address to copy it.
+          </p>
+          <div className="ip-grid">
+            {all.map((c) => (
+              <button
+                type="button"
+                key={c.ip}
+                className={[
+                  "ip-cell",
+                  c.taken ? "taken" : "free",
+                  c.ip === scan.firstFree ? "lowest" : "",
+                  c.ip === shown?.ip ? "picked" : "",
+                ].join(" ")}
+                title={`${c.ip}: ${c.taken ? BY[c.taken.by] : "free"}`}
+                onClick={() => {
+                  setPicked(c.ip);
+                  if (!c.taken) copy(c.ip);
+                }}
+              >
+                {c.last}
+              </button>
+            ))}
+          </div>
+          <div className="ip-legend muted small">
+            <span>
+              <i className="ip-cell free" /> free
+            </span>
+            <span>
+              <i className="ip-cell taken" /> taken
+            </span>
+            <span>
+              <i className="ip-cell free lowest" /> lowest free
+            </span>
+          </div>
+          {shown && (
+            <p className="ip-detail">
+              <strong>{shown.ip}</strong>{" "}
+              {shown.taken ? (
+                <span className="muted">
+                  taken: {BY[shown.taken.by]}
+                  {shown.taken.mac ? ` · ${shown.taken.mac}` : ""}
+                </span>
+              ) : (
+                <span className="good">{copied === shown.ip ? "free · copied" : "free"}</span>
+              )}
             </p>
           )}
         </Card>
-      )}
-
-      {scan && scan.taken.length > 0 && (
-        <>
-          <h2>Taken ({scan.taken.length})</h2>
-          <div className="card history">
-            <ul className="log-entries">
-              {scan.taken.map((t) => (
-                <li key={t.ip}>
-                  <div className="log-line">
-                    <span className="log-name">
-                      <strong>{t.ip}</strong>
-                    </span>
-                    <span className="muted small">
-                      {BY[t.by]}
-                      {t.mac ? ` · ${t.mac}` : ""}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </>
       )}
     </>
   );
