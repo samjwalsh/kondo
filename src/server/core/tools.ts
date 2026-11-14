@@ -7,6 +7,7 @@ import type { PlexClient, PlexMonitor } from "../integrations/plex.js";
 import type { QbittorrentClient } from "../integrations/qbittorrent.js";
 import type { SeerrClient } from "../integrations/seerr.js";
 import type { Telegram } from "../integrations/telegram.js";
+import type { UnraidClient } from "../integrations/unraid.js";
 import type { Db, Migration } from "./db.js";
 import type { EventBus } from "./events.js";
 import type { HealthCheckDef } from "./health.js";
@@ -23,6 +24,7 @@ export interface Integrations {
   telegram: Telegram;
   seerr: SeerrClient;
   email: Email;
+  unraid: UnraidClient;
 }
 
 /** Everything the core offers a tool. */

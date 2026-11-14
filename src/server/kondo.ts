@@ -24,6 +24,7 @@ import { PlexClient, PlexMonitor, plexSettings } from "./integrations/plex.js";
 import { QbittorrentClient, qbittorrentSettings } from "./integrations/qbittorrent.js";
 import { SeerrClient, seerrSettings } from "./integrations/seerr.js";
 import { Telegram, telegramSettings } from "./integrations/telegram.js";
+import { UnraidClient, unraidSettings } from "./integrations/unraid.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerHookRoutes } from "./routes/hooks.js";
@@ -78,6 +79,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
     telegramSettings,
     emailSettings,
     kumaSettings,
+    unraidSettings,
   ]) {
     settings.register(section);
   }
@@ -90,6 +92,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
     telegram: new Telegram(settings),
     seerr: new SeerrClient(settings),
     email: new Email(settings),
+    unraid: new UnraidClient(settings),
   };
   const kuma = new Kuma(settings);
   const plex = new PlexMonitor(integrations.plex, events, app.log);
@@ -175,6 +178,7 @@ export async function createKondo(config: Config, options: KondoOptions = {}): P
       seerr: () => integrations.seerr.test(),
       email: () => integrations.email.test(),
       kuma: () => kuma.test(),
+      unraid: () => integrations.unraid.test(),
     },
   });
   await registerWebUi(app, config.webDir);

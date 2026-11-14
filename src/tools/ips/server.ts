@@ -18,7 +18,7 @@ export const ipsSettings: SettingsSection = {
       label: "Also taken",
       type: "lines",
       default: "",
-      help: "Addresses that are in use but may not answer, e.g. stopped containers. One per line: the last number or the full address.",
+      help: "Addresses that are in use but may not answer, e.g. a device that's often off. One per line: the last number or the full address. Stopped containers are found on their own once Unraid is set up.",
     },
   ],
 };
@@ -41,7 +41,27 @@ export default defineTool({
         const network = localNetwork();
         try {
           if (!network) throw new Error("This machine has no IPv4 network address");
+          const unraid = ctx.integrations.unraid;
+          let containers = null;
+          let dockerError: string | null = null;
+          if (unraid.configured()) {
+            try {
+              containers = await unraid.containers();
+            } catch (error) {
+              dockerError = `Couldn't read containers from Unraid: ${errorMessage(error)}`;
+            }
+          }
+          const known = new Map<string, string>();
+          try {
+            const host = new URL(String(ctx.settings.values("unraid").url ?? "")).hostname;
+            if (host) known.set(host, "Unraid");
+          } catch {
+            // No Unraid address set.
+          }
           latest = await scanRange({
+            known,
+            containers,
+            dockerError,
             network,
             from: Number(values.from),
             to: Number(values.to),
@@ -52,9 +72,10 @@ export default defineTool({
             network: "",
             from: "",
             to: "",
+            addresses: [],
             firstFree: null,
             freeCount: 0,
-            taken: [],
+            docker: { used: false, error: null, containers: 0 },
             scannedAt: new Date().toISOString(),
             error: errorMessage(error),
           };

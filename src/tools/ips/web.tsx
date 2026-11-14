@@ -4,34 +4,10 @@ import { Card } from "../../web/components.js";
 import { ago } from "../../web/format.js";
 import { useApi } from "../../web/live.js";
 import { Link } from "../../web/router.js";
-import type { IpScan, TakenIp } from "./shared.js";
+import type { IpScan } from "./shared.js";
 
-const BY: Record<TakenIp["by"], string> = {
-  reply: "answered ping",
-  arp: "answered ARP only",
-  "this machine": "Kondo's machine",
-  reserved: "listed in Settings",
-};
-
-interface Cell {
-  ip: string;
-  last: number;
-  taken: TakenIp | null;
-}
-
-/** Every address in the scanned range, in order. */
-function cells(scan: IpScan): Cell[] {
-  const prefix = scan.from.split(".").slice(0, 3).join(".");
-  const from = Number(scan.from.split(".")[3]);
-  const to = Number(scan.to.split(".")[3]);
-  const taken = new Map(scan.taken.map((t) => [t.ip, t]));
-  const out: Cell[] = [];
-  for (let n = from; n <= to; n++) {
-    const ip = `${prefix}.${n}`;
-    out.push({ ip, last: n, taken: taken.get(ip) ?? null });
-  }
-  return out;
-}
+/** A label short enough for a grid cell. */
+const short = (label: string) => label.split(/[ ,.]/)[0]?.slice(0, 12) ?? label;
 
 export function IpsPage() {
   const { data: scan, error, reload } = useApi<IpScan>("/api/tools/ips/scan");
@@ -56,8 +32,10 @@ export function IpsPage() {
     });
   };
 
-  const all = scan && !scan.error ? cells(scan) : [];
-  const shown = all.find((c) => c.ip === (picked ?? scan?.firstFree)) ?? null;
+  const all = scan?.addresses ?? [];
+  const shown = all.find((a) => a.ip === (picked ?? scan?.firstFree)) ?? null;
+  const stopped = all.filter((a) => a.state === "stopped").length;
+  const clashes = all.filter((a) => a.clash);
 
   return (
     <>
@@ -69,38 +47,52 @@ export function IpsPage() {
       </div>
       <p className="muted">
         Pings every address in the range and reads the ARP table, so devices that ignore ping still
-        count. Anything switched off (e.g. a stopped container) can't answer: add those under Also
-        taken in Settings.
+        count. Containers' addresses come from Unraid, so stopped ones still hold theirs.
       </p>
       {error && <p className="bad">{error}</p>}
       {!scan && !error && <p className="muted">Scanning…</p>}
       {scan?.error && <p className="bad">{scan.error}</p>}
+      {scan && !scan.docker.used && !scan.error && (
+        <p className="warn">
+          Unraid isn't set up, so stopped containers look free. Add it in{" "}
+          <Link to="/settings">Settings → Unraid</Link>.
+        </p>
+      )}
+      {scan?.docker.error && <p className="bad">{scan.docker.error}</p>}
+      {clashes.length > 0 && (
+        <p className="bad">
+          {clashes.map((c) => `${c.ip}: ${c.why}`).join(". ")}. Starting it would clash.
+        </p>
+      )}
 
       {scan && !scan.error && (
         <Card title="Addresses" actions={<Link to="/settings">Settings</Link>}>
           <p className="muted small">
             {scan.freeCount} free between {scan.from} and {scan.to}
-            {scan.firstFree ? `, lowest ${scan.firstFree}` : ""}. Scanned {ago(scan.scannedAt)}.
-            Click a free address to copy it.
+            {scan.firstFree ? `, lowest ${scan.firstFree}` : ""}
+            {stopped > 0 ? `; ${stopped} held by stopped containers` : ""}. Scanned{" "}
+            {ago(scan.scannedAt)}. Click a free address to copy it.
           </p>
           <div className="ip-grid">
-            {all.map((c) => (
+            {all.map((a) => (
               <button
                 type="button"
-                key={c.ip}
+                key={a.ip}
                 className={[
                   "ip-cell",
-                  c.taken ? "taken" : "free",
-                  c.ip === scan.firstFree ? "lowest" : "",
-                  c.ip === shown?.ip ? "picked" : "",
+                  a.state,
+                  a.clash ? "clash" : "",
+                  a.ip === scan.firstFree ? "lowest" : "",
+                  a.ip === shown?.ip ? "picked" : "",
                 ].join(" ")}
-                title={`${c.ip}: ${c.taken ? BY[c.taken.by] : "free"}`}
+                title={`${a.ip}${a.label ? ` ${a.label}` : ""}: ${a.why}`}
                 onClick={() => {
-                  setPicked(c.ip);
-                  if (!c.taken) copy(c.ip);
+                  setPicked(a.ip);
+                  if (a.state === "free") copy(a.ip);
                 }}
               >
-                {c.last}
+                <span className="ip-num">{a.last}</span>
+                {a.label && <span className="ip-label">{short(a.label)}</span>}
               </button>
             ))}
           </div>
@@ -109,23 +101,22 @@ export function IpsPage() {
               <i className="ip-cell free" /> free
             </span>
             <span>
-              <i className="ip-cell taken" /> taken
+              <i className="ip-cell stopped" /> stopped container
             </span>
             <span>
-              <i className="ip-cell free lowest" /> lowest free
+              <i className="ip-cell taken" /> in use
             </span>
           </div>
           {shown && (
             <p className="ip-detail">
-              <strong>{shown.ip}</strong>{" "}
-              {shown.taken ? (
-                <span className="muted">
-                  taken: {BY[shown.taken.by]}
-                  {shown.taken.mac ? ` · ${shown.taken.mac}` : ""}
-                </span>
-              ) : (
-                <span className="good">{copied === shown.ip ? "free · copied" : "free"}</span>
-              )}
+              <strong>{shown.ip}</strong> {shown.label && <strong>{shown.label}</strong>}{" "}
+              <span className={shown.state === "free" ? "good" : "muted"}>
+                {shown.state === "free"
+                  ? copied === shown.ip
+                    ? "free · copied"
+                    : "free"
+                  : `${shown.why}${shown.mac ? ` · ${shown.mac}` : ""}`}
+              </span>
             </p>
           )}
         </Card>

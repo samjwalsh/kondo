@@ -888,29 +888,54 @@ table.tracks .badge {
   margin: 12px 0 8px;
 }
 .ip-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 44px;
+  min-width: 0;
+  padding: 4px 2px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  overflow: hidden;
+}
+.ip-num {
   font:
-    500 0.85rem / 1 ui-monospace,
+    600 0.85rem / 1 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
-  padding: 8px 0;
-  min-width: 0;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  text-align: center;
+}
+.ip-label {
+  font-size: 0.65rem;
+  line-height: 1.1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
 }
 .ip-cell.free {
-  background: color-mix(in srgb, var(--good) 18%, var(--surface));
-  border-color: color-mix(in srgb, var(--good) 45%, var(--surface));
-  color: var(--text);
+  background: color-mix(in srgb, var(--good) 20%, var(--surface));
+  border-color: color-mix(in srgb, var(--good) 50%, var(--surface));
   cursor: copy;
 }
+.ip-cell.stopped {
+  /* Yellow in both themes (--warn is brown in the light one). */
+  background: color-mix(in srgb, #f2c230 40%, var(--surface));
+  border-color: color-mix(in srgb, #f2c230 80%, var(--surface));
+}
 .ip-cell.taken {
-  background: var(--surface-2);
-  color: var(--muted);
+  background: color-mix(in srgb, var(--bad) 16%, var(--surface));
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--surface));
 }
 .ip-cell.lowest {
   border: 2px solid var(--good);
+}
+.ip-cell.clash {
+  border: 2px dashed var(--bad);
 }
 .ip-cell.picked {
   outline: 2px solid var(--accent);
@@ -925,9 +950,15 @@ table.tracks .badge {
   display: inline-block;
   width: 14px;
   height: 14px;
+  min-height: 0;
   padding: 0;
   vertical-align: -2px;
 }
 .ip-detail {
   margin-top: 8px;
+}
+@media (max-width: 600px) {
+  .ip-label {
+    display: none;
+  }
 }

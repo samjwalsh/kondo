@@ -1,6 +1,8 @@
+import { Resolver } from "node:dns/promises";
 import os from "node:os";
 import { runProcess } from "../../server/core/process.js";
-import type { IpScan, TakenIp } from "./shared.js";
+import type { UnraidContainer } from "../../server/integrations/unraid.js";
+import type { IpAddress, IpScan } from "./shared.js";
 
 export interface Network {
   /** The first three octets, e.g. "10.0.0". */
@@ -38,7 +40,11 @@ export function parseNeighbours(lines: string[]): Map<string, string> {
 export interface Probe {
   ping(ip: string): Promise<boolean>;
   neighbours(): Promise<string[]>;
+  /** A DNS name for the address, if the local DNS knows one. */
+  name(ip: string): Promise<string | null>;
 }
+
+const resolver = new Resolver({ timeout: 1000, tries: 1 });
 
 export const systemProbe: Probe = {
   async ping(ip) {
@@ -50,6 +56,14 @@ export const systemProbe: Probe = {
     await runProcess("ip", ["-4", "neigh", "show"], { onStdoutLine: (l) => out.push(l.trim()) });
     return out;
   },
+  async name(ip) {
+    try {
+      const [name] = await resolver.reverse(ip);
+      return name ? name.replace(/\.(lan|local|home|localdomain)$/i, "") : null;
+    } catch {
+      return null;
+    }
+  },
 };
 
 export interface ScanOptions {
@@ -58,52 +72,102 @@ export interface ScanOptions {
   to: number;
   /** Last octets or full addresses that count as taken even when silent. */
   reserved: string[];
+  /** Containers from Unraid, or null when not set up. */
+  containers: UnraidContainer[] | null;
+  /** Known names for addresses, e.g. the Unraid server's own. */
+  known?: Map<string, string>;
+  dockerError?: string | null;
   probe?: Probe;
   concurrency?: number;
+}
+
+async function eachLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++] as T);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 /**
  * Pings every address in the range, then reads the ARP table: a device that drops
  * ping still had to answer ARP for the ping to be sent, so it shows up there.
+ * Container addresses from Unraid add names, and stopped containers' addresses.
  */
 export async function scanRange(options: ScanOptions): Promise<IpScan> {
-  const { network, probe = systemProbe, concurrency = 32 } = options;
+  const { network, probe = systemProbe, concurrency = 32, containers } = options;
   const from = Math.max(1, Math.min(options.from, options.to));
   const to = Math.min(254, Math.max(options.from, options.to));
   const ips: string[] = [];
   for (let n = from; n <= to; n++) ips.push(`${network.prefix}.${n}`);
 
   const replied = new Set<string>();
-  let next = 0;
-  const worker = async () => {
-    while (next < ips.length) {
-      const ip = ips[next++] as string;
-      if (ip !== network.self && (await probe.ping(ip))) replied.add(ip);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, ips.length) }, worker));
+  await eachLimited(ips, concurrency, async (ip) => {
+    if (ip !== network.self && (await probe.ping(ip))) replied.add(ip);
+  });
   const arp = parseNeighbours(await probe.neighbours());
 
   const reserved = new Set(
     options.reserved.map((r) => (/^\d+$/.test(r) ? `${network.prefix}.${r}` : r)),
   );
-  const taken: TakenIp[] = [];
-  for (const ip of ips) {
-    const mac = arp.get(ip) ?? null;
-    if (ip === network.self) taken.push({ ip, by: "this machine", mac: null });
-    else if (replied.has(ip)) taken.push({ ip, by: "reply", mac });
-    else if (mac) taken.push({ ip, by: "arp", mac });
-    else if (reserved.has(ip)) taken.push({ ip, by: "reserved", mac: null });
+  const byIp = new Map<string, UnraidContainer[]>();
+  for (const c of containers ?? []) {
+    for (const ip of c.ips) byIp.set(ip, [...(byIp.get(ip) ?? []), c]);
   }
-  const takenSet = new Set(taken.map((t) => t.ip));
-  const free = ips.filter((ip) => !takenSet.has(ip));
+
+  const addresses: IpAddress[] = ips.map((ip) => {
+    const mac = arp.get(ip) ?? null;
+    const bound = byIp.get(ip) ?? [];
+    const running = bound.filter((c) => c.running);
+    const stopped = bound.filter((c) => !c.running);
+    const answered = ip === network.self || replied.has(ip) || mac !== null;
+    const names = (list: UnraidContainer[]) => list.map((c) => c.name).join(", ") || null;
+    const base = { ip, last: Number(ip.split(".")[3]), mac, clash: false };
+
+    if (ip === network.self)
+      return { ...base, state: "taken", label: "Kondo", why: "this machine" };
+    if (running.length > 0)
+      return { ...base, state: "taken", label: names(running), why: "container, running" };
+    if (answered) {
+      return {
+        ...base,
+        state: "taken",
+        label: null,
+        why: replied.has(ip) ? "answered ping" : "answered ARP only",
+        // A device answers on an address a stopped container wants: starting it would clash.
+        clash: stopped.length > 0,
+        ...(stopped.length > 0 && { why: `answers, but stopped ${names(stopped)} is set to it` }),
+      };
+    }
+    if (stopped.length > 0)
+      return { ...base, state: "stopped", label: names(stopped), why: "container, stopped" };
+    if (reserved.has(ip))
+      return { ...base, state: "taken", label: null, why: "listed in Settings" };
+    return { ...base, state: "free", label: null, why: "nothing answered" };
+  });
+
+  // Names for taken addresses no container explains (desktop, VMs, the router…).
+  await eachLimited(
+    addresses.filter((a) => a.state === "taken" && a.label === null),
+    concurrency,
+    async (a) => {
+      a.label = options.known?.get(a.ip) ?? (await probe.name(a.ip));
+    },
+  );
+
+  const free = addresses.filter((a) => a.state === "free");
   return {
     network: `${network.prefix}.0/24`,
     from: ips[0] ?? "",
     to: ips.at(-1) ?? "",
-    firstFree: free[0] ?? null,
+    addresses,
+    firstFree: free[0]?.ip ?? null,
     freeCount: free.length,
-    taken,
+    docker: {
+      used: containers !== null,
+      error: options.dockerError ?? null,
+      containers: containers?.length ?? 0,
+    },
     scannedAt: new Date().toISOString(),
     error: null,
   };
