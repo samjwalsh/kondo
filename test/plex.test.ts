@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { isLibraryChange, parseSessions, parseUnmatched } from "../src/server/integrations/plex.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  isLibraryChange,
+  PlexClient,
+  parseSessions,
+  parseUnmatched,
+} from "../src/server/integrations/plex.js";
 
 describe("plex sessions", () => {
   it("handles an idle server", () => {
@@ -111,5 +116,63 @@ describe("plex library notifications", () => {
     expect(isLibraryChange(timeline([{ identifier: "other", type: 1, state: 5 }]))).toBe(false);
     expect(isLibraryChange({ NotificationContainer: { type: "playing" } })).toBe(false);
     expect(isLibraryChange({})).toBe(false);
+  });
+});
+
+describe("re-analysing a replaced file", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const client = () =>
+    new PlexClient({
+      values: () => ({ url: "http://plex:32400" }),
+      secret: () => "token",
+    } as unknown as ConstructorParameters<typeof PlexClient>[0]);
+
+  it("finds the episode by its exact path, then analyses it and starts deep analysis", async () => {
+    const calls: { url: string; method: string }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, method: init.method ?? "GET" });
+      const body = url.endsWith("/library/sections")
+        ? {
+            MediaContainer: {
+              Directory: [
+                { key: "1", type: "movie", Location: [{ path: "/media/Movies" }] },
+                { key: "12", type: "show", Location: [{ path: "/media/TV/" }] },
+              ],
+            },
+          }
+        : { MediaContainer: { Metadata: [{ ratingKey: "91284" }] } };
+      return new Response(JSON.stringify(body));
+    });
+    const plex = client();
+    const file = "/media/TV/The Last of Us/Season 1/S01E05 & more.mkv";
+    expect(await plex.itemForFile(file)).toBe("91284");
+    const lookup = new URL(calls[1]?.url ?? "");
+    expect(lookup.pathname).toBe("/library/sections/12/all");
+    expect(lookup.searchParams.get("type")).toBe("4");
+    // `file==` (exact), not `file=` (contains).
+    expect(lookup.searchParams.get("file=")).toBe(file);
+
+    await plex.analyze("91284");
+    await plex.startDeepAnalysis();
+    expect(calls.slice(2)).toEqual([
+      { url: "http://plex:32400/library/metadata/91284/analyze", method: "PUT" },
+      { url: "http://plex:32400/butler/DeepMediaAnalysis", method: "POST" },
+    ]);
+  });
+
+  it("finds nothing outside Plex's libraries", async () => {
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            MediaContainer: {
+              Directory: [{ key: "1", type: "movie", Location: [{ path: "/media/Movies" }] }],
+            },
+          }),
+        ),
+    );
+    expect(await client().itemForFile("/elsewhere/film.mkv")).toBeNull();
   });
 });

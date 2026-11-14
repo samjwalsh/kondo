@@ -222,6 +222,14 @@ export default defineTool({
       });
     };
 
+    /** Night window (or idle mode after a quiet spell), not paused, and nobody watching. */
+    const remuxAllowed = () => {
+      const info = ctx.scheduler.info();
+      const quietMs = ctx.plex.quietForMs();
+      if (info.paused || quietMs <= 0) return false;
+      return info.inWindow || (info.idleMode && quietMs >= info.idleQuietMinutes * 60_000);
+    };
+
     /**
      * Keeps up to `maxWaiting` results waiting or in progress. Each encoder gets one file queued
      * beyond what it runs at once (the CPU may run several). The CPU (better compression) takes
@@ -241,8 +249,10 @@ export default defineTool({
         Number(v.maxWaiting) -
         store.countOutcomes(["awaiting-approval", "approved", "swapping"]) -
         ctx.activeJobs("encode");
-      // Removing other-language audio: quick, and in the general slot, so one at a time.
-      if (free > 0 && store.activeRemuxes() === 0) {
+      // Remuxes (tracks only): quick, and in the general slot, so one at a time. That slot is
+      // always open, so they wait for the same quiet times as encodes: they read and write the
+      // whole file.
+      if (free > 0 && store.activeRemuxes() === 0 && remuxAllowed()) {
         const file = store.nextRemux();
         if (file) {
           ctx.enqueue<EncodePayload>(
@@ -370,7 +380,7 @@ export default defineTool({
       slot: (p) => (p.encoder === "remux" ? "general" : (p.encoder ?? "gpu")),
       title: (p) =>
         p.encoder === "remux"
-          ? `Remove other-language audio from ${p.name}`
+          ? `Remux ${p.name} (audio only)`
           : `Transcode ${p.name}${p.encoder === "cpu" ? " (CPU)" : ""}`,
       run: (job) =>
         runEncode(job, {
@@ -412,6 +422,50 @@ export default defineTool({
         queueSwaps();
       },
       15_000,
+    );
+
+    // Plex re-analyses swapped-in files, one every 2 minutes while nobody is watching. Its deep
+    // analysis task (peak bitrates) is then started at most every 15 minutes.
+    let deepAnalysis = { pending: false, startedAt: 0 };
+    ctx.every(
+      () => 2 * 60_000,
+      async () => {
+        const plex = ctx.integrations.plex;
+        if (!plex.configured() || ctx.plex.quietForMs() <= 0) return;
+        const now = new Date();
+        const next = store.nextPlexAnalyse(now);
+        try {
+          if (next) {
+            const exists = await stat(next.path).then(
+              () => true,
+              () => false,
+            );
+            const key = exists ? await plex.itemForFile(next.path) : null;
+            if (key) {
+              await plex.analyze(key);
+              store.plexAnalyseDone(next.path);
+              deepAnalysis.pending = true;
+            } else if (!exists || next.tries >= 5) {
+              // Gone, or Plex never added it (e.g. not in a Plex library).
+              store.plexAnalyseDone(next.path);
+              if (exists)
+                ctx.log.warn({ file: next.path }, "Plex doesn't have this file; not analysed");
+            } else {
+              store.retryPlexAnalyse(next.path, new Date(now.getTime() + 10 * 60_000));
+            }
+          }
+          if (
+            deepAnalysis.pending &&
+            (now.getTime() - deepAnalysis.startedAt >= 15 * 60_000 || !store.nextPlexAnalyse(now))
+          ) {
+            await plex.startDeepAnalysis();
+            deepAnalysis = { pending: false, startedAt: now.getTime() };
+          }
+        } catch (error) {
+          ctx.log.warn({ err: errorMessage(error) }, "Couldn't ask Plex to analyse a file");
+        }
+      },
+      60_000,
     );
 
     ctx.every(
@@ -630,7 +684,7 @@ export default defineTool({
       ];
       if (s.toRemux.count > 0) {
         lines.push(
-          `${s.toRemux.count.toLocaleString("en-GB")} with other-language audio to remove`,
+          `${s.toRemux.count.toLocaleString("en-GB")} with audio tracks to remove or convert`,
         );
       }
       if (s.done.count > 0) {

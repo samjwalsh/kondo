@@ -17,7 +17,7 @@ function run(p: ReturnType<typeof probe>, originalLanguage: string | null = "eng
   return evaluate(extractMediaInfo(p), originalLanguage, RULES);
 }
 
-/** "action:to" per track index, e.g. { 1: "convert:E-AC3 5.1 · 640 kb/s", 2: "drop" }. */
+/** "action:to" per track index, e.g. { 1: "convert:AAC stereo · 192 kb/s", 2: "drop" }. */
 function actions(tracks: PlannedTrack[]) {
   return Object.fromEntries(tracks.map((t) => [t.index, t.to ? `${t.action}:${t.to}` : t.action]));
 }
@@ -63,13 +63,13 @@ describe("decisions", () => {
     );
     expect(r).toMatchObject({ decision: "transcode", reasonCode: "h264" });
     expect(actions(r.plan?.tracks ?? [])).toEqual({
-      1: "convert:E-AC3 5.1 · 640 kb/s",
+      1: "convert:AAC stereo · 192 kb/s",
       2: "drop",
       3: "keep",
     });
     expect(r.plan?.tracks.find((t) => t.index === 2)?.reason).toBe("Commentary");
     expect(r.plan?.tracks.find((t) => t.index === 1)?.makeDefault).toBe(true);
-    // ≈ (1.5 + 0.64 + 0.05) Mb/s for 2600 s, far below 8 GB.
+    // ≈ (1.5 + 0.19 + 0.05) Mb/s for 2600 s, far below 8 GB.
     expect(r.plan?.estimatedBytes).toBeLessThan(800_000_000);
   });
 
@@ -92,7 +92,7 @@ describe("decisions", () => {
     expect(actions(r.plan?.tracks ?? [])).toEqual({
       1: "drop",
       2: "drop",
-      3: "convert:E-AC3 5.1 · 640 kb/s",
+      3: "convert:AAC stereo · 192 kb/s",
       4: "drop",
       5: "drop",
       6: "keep",
@@ -130,8 +130,8 @@ describe("decisions", () => {
       "kor",
     );
     expect(actions(r.plan?.tracks ?? [])).toEqual({
-      1: "keep",
-      2: "keep",
+      1: "convert:AAC stereo · 192 kb/s",
+      2: "convert:AAC stereo · 192 kb/s",
       3: "keep",
       4: "keep",
       5: "drop",
@@ -145,7 +145,7 @@ describe("decisions", () => {
       probe([video("h264", 1920, 1080, { tags: { BPS: "9000000" } }), audio("ac3", 6, "fre")]),
       "fre",
     );
-    expect(actions(r.plan?.tracks ?? [])).toEqual({ 1: "keep" });
+    expect(actions(r.plan?.tracks ?? [])).toEqual({ 1: "convert:AAC stereo · 192 kb/s" });
     expect(r.plan?.notes.join(" ")).toMatch(/No English audio or subtitles/);
   });
 
@@ -169,7 +169,10 @@ describe("decisions", () => {
         audio("ac3", 2, "ger"),
       ]),
     );
-    expect(actions(r.plan?.tracks ?? [])).toEqual({ 1: "keep", 2: "drop" });
+    expect(actions(r.plan?.tracks ?? [])).toEqual({
+      1: "convert:AAC stereo · 192 kb/s",
+      2: "drop",
+    });
     expect(r.plan?.tracks[0]?.reason).toMatch(/keeping the main track/);
   });
 
@@ -188,7 +191,7 @@ describe("decisions", () => {
       "jpn",
     );
     expect(actions(r.plan?.tracks ?? [])).toEqual({
-      1: "convert:E-AC3 stereo · 224 kb/s",
+      1: "convert:AAC stereo · 192 kb/s",
       2: "keep",
       3: "keep",
       4: "keep",
@@ -207,18 +210,23 @@ describe("decisions", () => {
         subtitle("subrip", "spa"),
       ]),
     );
-    expect(actions(r.plan?.tracks ?? [])).toEqual({ 1: "keep", 2: "drop", 3: "drop" });
+    expect(actions(r.plan?.tracks ?? [])).toEqual({
+      1: "convert:AAC stereo · 192 kb/s",
+      2: "drop",
+      3: "drop",
+    });
     expect(r.plan?.tracks.find((t) => t.index === 2)?.reason).toBe("Audio description");
   });
 
-  it("converts 7.1 TrueHD Atmos to 5.1 and notes the lost Atmos", () => {
+  it("downmixes 7.1 TrueHD Atmos to stereo AAC and notes the lost Atmos", () => {
     const r = run(
       probe([
         video("h264", 1920, 1080, { tags: { BPS: "25000000" } }),
         audio("truehd", 8, "eng", "TrueHD Atmos 7.1", { isDefault: true }),
       ]),
     );
-    expect(actions(r.plan?.tracks ?? [])[1]).toBe("convert:E-AC3 5.1 (from 7.1) · 640 kb/s");
+    expect(actions(r.plan?.tracks ?? [])[1]).toBe("convert:AAC stereo · 192 kb/s");
+    expect(r.plan?.tracks[0]?.reason).toMatch(/7\.1 isn't playable everywhere/);
     expect(r.plan?.notes.join(" ")).toMatch(/Atmos is lost/);
   });
 
@@ -310,7 +318,7 @@ describe("missing language tags", () => {
     expect(sub?.reason).toMatch(/going by its title/);
     // The lone unlabelled audio track of an English show is labelled English, and there's no warning.
     expect(r.plan?.tracks.find((t) => t.kind === "audio")).toMatchObject({
-      action: "keep",
+      action: "convert",
       setLanguage: "eng",
     });
     expect(r.plan?.notes).toEqual([]);
@@ -334,7 +342,7 @@ describe("missing language tags", () => {
         audio("ac3", 2, undefined, undefined, { disposition: { visual_impaired: 1 } }),
       ]),
     );
-    expect(r.plan?.tracks[0]).toMatchObject({ action: "keep" });
+    expect(r.plan?.tracks[0]).toMatchObject({ action: "convert" });
     expect(r.plan?.tracks[0]?.reason).toMatch(
       /The only audio track \(marked as audio description\)/,
     );
@@ -366,13 +374,16 @@ describe("one audio track per language", () => {
         audio("ac3", 6, "eng", "AC-3 5.1", { bit_rate: "640000" }),
       ]),
     );
-    expect(actions(r.plan?.tracks ?? [])).toEqual({ 1: "convert:E-AC3 5.1 · 640 kb/s", 2: "drop" });
+    expect(actions(r.plan?.tracks ?? [])).toEqual({
+      1: "convert:AAC stereo · 192 kb/s",
+      2: "drop",
+    });
     expect(r.plan?.tracks.find((t) => t.index === 2)?.reason).toBe(
       "Another English track is kept (TrueHD 5.1)",
     );
   });
 
-  it("prefers surround over stereo, per language, and keeps every unlabelled track", () => {
+  it("prefers a real stereo mix to downmixing surround, per language, and keeps every unlabelled track", () => {
     const r = run(
       probe([
         video("h264", 1920, 1080, { tags: { BPS: "9000000" } }),
@@ -385,17 +396,17 @@ describe("one audio track per language", () => {
       "kor",
     );
     expect(actions(r.plan?.tracks ?? [])).toEqual({
-      1: "drop",
-      2: "keep",
+      1: "keep",
+      2: "drop",
       3: "keep",
       4: "keep",
       5: "keep",
     });
-    expect(r.plan?.tracks.find((t) => t.index === 2)?.makeDefault).toBe(true);
+    expect(r.plan?.tracks.find((t) => t.index === 1)?.makeDefault).toBe(true);
   });
 });
 
-describe("removing other-language audio from files that aren't re-encoded", () => {
+describe("remuxing files that aren't re-encoded: other-language and unplayable audio", () => {
   const efficient = () => video("hevc", 1920, 1080, { tags: { BPS: "1500000" } });
   const decide = (p: ReturnType<typeof probe>, original: string | null = "eng") => {
     const info = extractMediaInfo(p);
@@ -403,7 +414,7 @@ describe("removing other-language audio from files that aren't re-encoded", () =
     return remuxOverride(base, info, original) ?? base;
   };
 
-  it("drops a dub that's the default, copies the rest and makes English the default", () => {
+  it("drops a dub that's the default, converts the rest and makes English the default", () => {
     const e = decide(
       probe([
         efficient(),
@@ -415,15 +426,19 @@ describe("removing other-language audio from files that aren't re-encoded", () =
     );
     expect(e.decision).toBe("remux");
     expect(e.reasonCode).toBe("foreign-audio");
-    expect(e.reason).toBe("Italian audio (it's the default) to remove; English kept");
+    expect(e.reason).toBe(
+      "Italian audio (it's the default) to remove; English kept; audio → stereo AAC",
+    );
     expect(e.plan?.video.to).toBe("Copied as it is");
-    // TrueHD is copied, not converted: a remux never touches what it keeps.
-    expect(actions(e.plan?.tracks ?? [])).toEqual({ 1: "drop", 2: "keep", 3: "keep", 4: "drop" });
+    expect(actions(e.plan?.tracks ?? [])).toEqual({
+      1: "drop",
+      2: "convert:AAC stereo · 192 kb/s",
+      3: "keep",
+      4: "drop",
+    });
     expect(e.plan?.tracks.find((t) => t.index === 2)?.makeDefault).toBe(true);
-    expect(e.plan?.notes.some((n) => n.includes("Atmos is lost"))).toBe(false);
-    // Only the dropped AAC's bitrate comes off.
+    expect(e.plan?.notes.some((n) => n.includes("Atmos is lost"))).toBe(true);
     expect(e.plan?.estimatedBytes).toBeLessThan(8_000_000_000);
-    expect(e.plan?.estimatedBytes).toBeGreaterThan(7_900_000_000);
   });
 
   it("works for files Squish encoded", () => {
@@ -440,7 +455,7 @@ describe("removing other-language audio from files that aren't re-encoded", () =
   });
 
   it("keeps the original language of a foreign title", () => {
-    const p = probe([efficient(), audio("flac", 2, "jpn"), audio("aac", 2, "eng")]);
+    const p = probe([efficient(), audio("aac", 2, "jpn"), audio("aac", 2, "eng")]);
     expect(decide(p, "jpn").decision).toBe("skip");
     // An English dub of an anime is kept too, but a French one goes.
     expect(
@@ -456,11 +471,45 @@ describe("removing other-language audio from files that aren't re-encoded", () =
   it("doesn't count commentary or a second English track as a reason", () => {
     const p = probe([
       efficient(),
-      audio("ac3", 6, "eng", undefined, { isDefault: true }),
-      audio("aac", 2, "eng"),
-      audio("aac", 2, "eng", "Commentary"),
+      audio("aac", 2, "eng", undefined, { isDefault: true }),
+      audio("ac3", 6, "eng"),
+      audio("ac3", 2, "eng", "Commentary"),
     ]);
     expect(decide(p).decision).toBe("skip");
+  });
+
+  it("converts audio players can't play directly, keeping every language when the original isn't known", () => {
+    const p = probe([
+      efficient(),
+      audio("eac3", 6, "eng", undefined, { isDefault: true }),
+      audio("flac", 2, "jpn"),
+      audio("aac", 2, "eng", "Commentary"),
+    ]);
+    const e = decide(p, null);
+    expect(e).toMatchObject({
+      decision: "remux",
+      reasonCode: "audio-compat",
+      reason: "E-AC3 5.1 and FLAC stereo audio → stereo AAC",
+    });
+    expect(actions(e.plan?.tracks ?? [])).toEqual({
+      1: "convert:AAC stereo · 192 kb/s",
+      2: "convert:AAC stereo · 192 kb/s",
+      3: "drop",
+    });
+  });
+
+  it("uses a stereo AAC track that's already there instead of a surround default", () => {
+    const e = decide(
+      probe([
+        efficient(),
+        audio("ac3", 6, "eng", undefined, { isDefault: true }),
+        audio("aac", 2, "eng"),
+      ]),
+    );
+    expect(e).toMatchObject({ decision: "remux", reasonCode: "audio-compat" });
+    expect(e.reason).toBe("AC3 5.1 default audio dropped; the stereo track becomes the default");
+    expect(actions(e.plan?.tracks ?? [])).toEqual({ 1: "drop", 2: "keep" });
+    expect(e.plan?.tracks.find((t) => t.index === 2)?.makeDefault).toBe(true);
   });
 
   it("leaves HDR, 4K and files being transcoded to their own rules", () => {
@@ -473,10 +522,14 @@ describe("removing other-language audio from files that aren't re-encoded", () =
     expect(decide(probe([video("h264", 1920, 1080), ...tracks])).decision).toBe("transcode");
   });
 
-  it("never touches a file Kondo made", () => {
-    const p = probe([efficient(), audio("aac", 2, "ita"), audio("aac", 2, "eng")], {
+  it("fixes the audio of a file Kondo made, and then leaves it alone", () => {
+    const before = probe([efficient(), audio("eac3", 6, "eng", undefined, { isDefault: true })], {
       tags: { KONDO: "abc" },
     });
-    expect(decide(p).reasonCode).toBe("kondo-done");
+    expect(decide(before)).toMatchObject({ decision: "remux", reasonCode: "audio-compat" });
+    const after = probe([efficient(), audio("aac", 2, "eng", undefined, { isDefault: true })], {
+      tags: { KONDO: "def" },
+    });
+    expect(decide(after).reasonCode).toBe("kondo-done");
   });
 });

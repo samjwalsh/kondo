@@ -4,6 +4,7 @@ import type { ComponentType } from "react";
 import { AttentionPage } from "./attention/web.js";
 import { DiagnosticsPage } from "./diagnostics/web.js";
 import { DownloadsPage } from "./downloads/web.js";
+import { IpsPage } from "./ips/web.js";
 import { MissingPage } from "./missing/web.js";
 import { RequestsPage } from "./requests/web.js";
 import { TranscodePage } from "./transcode/web.js";
@@ -14,5 +15,6 @@ export const toolPages: Record<string, ComponentType> = {
   downloads: DownloadsPage,
   missing: MissingPage,
   requests: RequestsPage,
+  ips: IpsPage,
   diagnostics: DiagnosticsPage,
 };

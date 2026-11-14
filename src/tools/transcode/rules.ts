@@ -56,7 +56,11 @@ const OLD_CODECS = new Set([
   "rv30",
   "rv40",
 ]);
-const COPY_AUDIO = new Set(["aac", "ac3", "eac3", "opus", "mp3", "vorbis", "mp2"]);
+/** Formats nearly every Plex player plays directly, so they're copied when stereo or mono. */
+const COPY_AUDIO = new Set(["aac", "mp3"]);
+/** Every kept audio track ends up as AAC stereo (or mono) at these rates (ffmpeg's own encoder). */
+export const AAC_STEREO_KBPS = 192;
+export const AAC_MONO_KBPS = 96;
 const STYLED_SUBS = new Set(["ass", "ssa"]);
 const CONVERT_SUBS = new Set(["mov_text", "webvtt", "text"]);
 const UNSTORABLE_SUBS = new Set(["eia_608", "dvb_teletext", "arib_caption"]);
@@ -148,10 +152,15 @@ function audioQuality(a: AudioInfo): number {
   return 0;
 }
 
-/** Positive when `a` is the better track to keep: more channels, then a better source. */
+/** Stereo first (a real stereo mix beats a downmix of surround), then surround, then mono. */
+function channelRank(channels: number): number {
+  return channels === 2 ? 3 : channels > 2 ? 2 : 1;
+}
+
+/** Positive when `a` is the better track to keep: a stereo mix, then a better source. */
 function compareAudio(a: AudioInfo, b: AudioInfo): number {
   return (
-    Math.min(a.channels, 6) - Math.min(b.channels, 6) ||
+    channelRank(a.channels) - channelRank(b.channels) ||
     audioQuality(a) - audioQuality(b) ||
     (a.kbps ?? 0) - (b.kbps ?? 0) ||
     Number(a.isDefault) - Number(b.isDefault) ||
@@ -164,13 +173,13 @@ interface AudioOutput {
   kbps: number;
   reason: string | null;
   /** Output channels when converting. */
-  channels: 1 | 2 | 6;
+  channels: 1 | 2;
 }
 
-/** What the encoder does with a kept audio track: copy it, or E-AC3 at these settings. */
+/** What the encoder does with a kept audio track: copy it, or AAC at these settings. */
 export function audioTarget(
   a: AudioInfo,
-): { copy: true } | { copy: false; channels: 1 | 2 | 6; kbps: number } {
+): { copy: true } | { copy: false; channels: 1 | 2; kbps: number } {
   const out = audioOutput(a);
   return out.to === null ? { copy: true } : { copy: false, channels: out.channels, kbps: out.kbps };
 }
@@ -180,37 +189,38 @@ export function subtitleNeedsSrt(codec: string): boolean {
   return CONVERT_SUBS.has(codec);
 }
 
-/** Copy small lossy formats; convert everything else to E-AC3. */
+/**
+ * Stereo (or mono) AAC and MP3 are copied; everything else becomes AAC, surround downmixed to
+ * stereo. AAC stereo direct-plays on nearly every Plex player (browsers can't play AC3/E-AC3/DTS,
+ * and many players take at most 6 channels), so Plex doesn't have to convert the audio.
+ */
 function audioOutput(a: AudioInfo): AudioOutput {
-  if (COPY_AUDIO.has(a.codec))
+  if (COPY_AUDIO.has(a.codec) && a.channels <= 2)
     return {
       to: null,
       kbps: a.kbps ?? assumedAudioKbps(a.codec, a.channels),
       reason: null,
       channels: 2,
     };
-  const lossless =
-    a.codec === "truehd" ||
-    a.codec === "flac" ||
-    a.codec === "alac" ||
-    a.codec.startsWith("pcm_") ||
-    (a.codec === "dts" && a.profile?.includes("MA"));
-  const reason = lossless
-    ? "Lossless audio is very large"
-    : a.codec === "dts"
-      ? "DTS is large"
-      : "Not a format Kondo keeps as-is";
-  if (a.channels > 2) {
-    const downmix = a.channels > 6 ? ` (from ${channelsName(a.channels)})` : "";
-    return { to: `E-AC3 5.1${downmix} · 640 kb/s`, kbps: 640, reason, channels: 6 };
-  }
-  if (a.channels === 1) return { to: "E-AC3 mono · 128 kb/s", kbps: 128, reason, channels: 1 };
-  return { to: "E-AC3 stereo · 224 kb/s", kbps: 224, reason, channels: 2 };
+  const reason =
+    a.channels > 2
+      ? `${channelsName(a.channels)} isn't playable everywhere, so it's downmixed to stereo AAC`
+      : `${audioCodecName(a)} isn't playable everywhere`;
+  if (a.channels === 1)
+    return { to: `AAC mono · ${AAC_MONO_KBPS} kb/s`, kbps: AAC_MONO_KBPS, reason, channels: 1 };
+  return { to: `AAC stereo · ${AAC_STEREO_KBPS} kb/s`, kbps: AAC_STEREO_KBPS, reason, channels: 2 };
+}
+
+/** True when a kept track would be converted (it isn't stereo/mono AAC or MP3). */
+export function audioNeedsConverting(a: AudioInfo): boolean {
+  return audioOutput(a).to !== null;
 }
 
 export interface PlanOptions {
-  /** Tracks only: the video and every kept audio track are copied as they are. */
+  /** Tracks only: the video is copied as it is (audio is still converted where needed). */
   remux?: boolean;
+  /** Keep every language's audio (when the original language isn't known). */
+  keepAllLanguages?: boolean;
 }
 
 export function planTracks(
@@ -219,15 +229,7 @@ export function planTracks(
   options: PlanOptions = {},
 ): Plan {
   const remux = options.remux === true;
-  const audioOut = (a: AudioInfo): AudioOutput =>
-    remux
-      ? {
-          to: null,
-          kbps: a.kbps ?? assumedAudioKbps(a.codec, a.channels),
-          reason: null,
-          channels: 2,
-        }
-      : audioOutput(a);
+  const audioOut = audioOutput;
   const tracks: PlannedTrack[] = [];
   const notes: string[] = [];
   const original = originalLanguage && originalLanguage !== "eng" ? originalLanguage : null;
@@ -239,7 +241,11 @@ export function planTracks(
   // Audio --------------------------------------------------------------------
   const usable = info.audio.filter((a) => !a.commentary && !a.descriptive);
   const wanted = usable.filter(
-    (a) => a.language === "eng" || a.language === null || a.language === original,
+    (a) =>
+      options.keepAllLanguages ||
+      a.language === "eng" ||
+      a.language === null ||
+      a.language === original,
   );
   // One track per known language, the best one (unlabelled tracks are all kept).
   const bestByLanguage = new Map<string, AudioInfo>();
@@ -314,7 +320,7 @@ export function planTracks(
         setLanguage,
       });
       if (out.to && /atmos/i.test(summary))
-        notes.push(`Atmos is lost converting ${audioCodecName(a)} to E-AC3.`);
+        notes.push(`Atmos is lost converting ${audioCodecName(a)} to stereo AAC.`);
     } else {
       const better = a.language === null ? undefined : bestByLanguage.get(a.language);
       const reason =
@@ -436,14 +442,19 @@ export function planTracks(
   };
 }
 
-/** The file's size less the tracks a remux drops (only their bitrate is known, not their bytes). */
+/**
+ * The file's size less the tracks a remux drops or shrinks (only their bitrate is known, not
+ * their bytes).
+ */
 function remuxedBytes(info: MediaInfo, tracks: PlannedTrack[]): number {
   let droppedKbps = 0;
   for (const t of tracks) {
-    if (t.action !== "drop") continue;
-    if (t.kind === "audio") {
+    if (t.kind === "audio" && t.action !== "keep") {
       const a = info.audio.find((x) => x.index === t.index);
-      if (a) droppedKbps += a.kbps ?? assumedAudioKbps(a.codec, a.channels);
+      if (!a) continue;
+      const before = a.kbps ?? assumedAudioKbps(a.codec, a.channels);
+      droppedKbps += t.action === "drop" ? before : before - audioOutput(a).kbps;
+    } else if (t.action !== "drop") {
     } else if (t.kind === "subtitle") {
       droppedKbps += info.subtitles.find((x) => x.index === t.index)?.kbps ?? 0;
     }
@@ -608,13 +619,15 @@ const REMUXABLE = new Set<ReasonCode>([
   "small-saving",
   "squish-done",
   "not-worth-it",
+  "kondo-done",
 ]);
 
 /**
- * A file Kondo won't re-encode, but whose audio has other-language tracks the track rules drop
- * (often the default one, so Plex plays the dub): copy it without them. Only when the original
- * language is known from Sonarr/Radarr, and only when an English or original-language track
- * stays; a file with nothing but a dub is left alone, since dropping tracks can't fix it.
+ * A file Kondo won't re-encode, but whose tracks still need work: other-language audio the track
+ * rules drop (often the default one, so Plex plays the dub), or audio that isn't stereo AAC (so
+ * many players can't play it directly). It's copied with only those tracks changed. Other-language
+ * tracks are only dropped when the original language is known from Sonarr/Radarr, and only when
+ * an English or original-language track stays; a file with nothing but a dub keeps it.
  */
 export function remuxOverride(
   evaluation: Evaluation,
@@ -623,26 +636,64 @@ export function remuxOverride(
 ): Evaluation | null {
   if (evaluation.decision !== "skip" || !REMUXABLE.has(evaluation.reasonCode)) return null;
   const video = info?.video;
-  if (!info || !video || info.kondoTag || !originalLanguage) return null;
+  if (!info || !video) return null;
+  // Copying HDR/Dolby Vision video with this ffmpeg may lose its metadata.
   if (video.hdr !== "none" || resolutionOf(video.width, video.height) === "above-1080p")
     return null;
   const usable = info.audio.filter((a) => !a.commentary && !a.descriptive);
   const wanted = (a: AudioInfo) =>
     a.language === null || a.language === "eng" || a.language === originalLanguage;
-  const foreign = usable.filter((a) => !wanted(a));
-  if (foreign.length === 0 || !usable.some(wanted)) return null;
+  const foreign = originalLanguage && usable.some(wanted) ? usable.filter((a) => !wanted(a)) : [];
 
-  const plan = planTracks(info, originalLanguage, { remux: true });
-  const names = [...new Set(foreign.map((a) => languageName(a.language)))];
-  const kept = [...new Set(usable.filter(wanted).map((a) => languageName(a.language)))];
+  const plan = planTracks(info, originalLanguage, {
+    remux: true,
+    keepAllLanguages: foreign.length === 0,
+  });
+  const converting = plan.tracks.filter((t) => t.kind === "audio" && t.action === "convert");
+  // A default track players can't play that the plan replaces with one they can.
   const sourceDefault = info.audio.find((a) => a.isDefault) ?? info.audio[0];
+  const newDefault = plan.tracks.find((t) => t.kind === "audio" && t.makeDefault);
+  const replacedDefault =
+    sourceDefault &&
+    newDefault &&
+    newDefault.index !== sourceDefault.index &&
+    audioNeedsConverting(sourceDefault)
+      ? sourceDefault
+      : null;
+  if (foreign.length === 0 && converting.length === 0 && !replacedDefault) return null;
+
   const list = (xs: string[]) =>
     xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : (xs[0] ?? "");
+  if (foreign.length === 0 && converting.length === 0 && replacedDefault) {
+    return {
+      decision: "remux",
+      reasonCode: "audio-compat",
+      reason: `${audioCodecName(replacedDefault)} ${channelsName(replacedDefault.channels)} default audio dropped; the stereo track becomes the default`,
+      plan,
+    };
+  }
+  if (foreign.length === 0) {
+    const from = [
+      ...new Set(
+        info.audio
+          .filter((a) => converting.some((t) => t.index === a.index))
+          .map((a) => `${audioCodecName(a)} ${channelsName(a.channels)}`),
+      ),
+    ];
+    return {
+      decision: "remux",
+      reasonCode: "audio-compat",
+      reason: `${list(from)} audio → stereo AAC`,
+      plan,
+    };
+  }
+  const names = [...new Set(foreign.map((a) => languageName(a.language)))];
+  const kept = [...new Set(usable.filter(wanted).map((a) => languageName(a.language)))];
   const defaultNote = sourceDefault && foreign.includes(sourceDefault) ? " (it's the default)" : "";
   return {
     decision: "remux",
     reasonCode: "foreign-audio",
-    reason: `${list(names)} audio${defaultNote} to remove; ${list(kept)} kept`,
+    reason: `${list(names)} audio${defaultNote} to remove; ${list(kept)} kept${converting.length > 0 ? "; audio → stereo AAC" : ""}`,
     plan,
   };
 }

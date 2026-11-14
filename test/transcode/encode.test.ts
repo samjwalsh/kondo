@@ -28,7 +28,7 @@ import { audio, probe, subtitle, video } from "./fixtures.js";
 
 const RULES = { threshold1080Mbps: 4.5, threshold720Mbps: 1.6, thresholdSdMbps: 0.8 };
 
-/** Value following a flag, e.g. valueAfter("-c:a:0") → "eac3". */
+/** Value following a flag, e.g. valueAfter("-c:a:0") → "aac". */
 const valueAfter = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
 
 describe("ffmpeg command", () => {
@@ -74,10 +74,10 @@ describe("ffmpeg command", () => {
     expect(valueAfter(args, "-vf")).toBe("crop=1920:800:0:140");
   });
 
-  it("converts the DTS track to E-AC3 5.1, drops its old title, and makes it the default", () => {
-    expect(valueAfter(args, "-c:a:0")).toBe("eac3");
-    expect(valueAfter(args, "-b:a:0")).toBe("640k");
-    expect(valueAfter(args, "-ac:a:0")).toBe("6");
+  it("downmixes the DTS track to stereo AAC, drops its old title, and makes it the default", () => {
+    expect(valueAfter(args, "-c:a:0")).toBe("aac");
+    expect(valueAfter(args, "-b:a:0")).toBe("192k");
+    expect(valueAfter(args, "-ac:a:0")).toBe("2");
     expect(args).toContain("title=");
     expect(valueAfter(args, "-disposition:a:0")).toBe("default");
     expect(valueAfter(args, "-c:a:1")).toBe("copy");
@@ -171,7 +171,7 @@ const hasFfmpeg = (() => {
     const encoders = execFileSync("ffmpeg", ["-hide_banner", "-encoders"], {
       stdio: "pipe",
     }).toString();
-    return ["libx264", "libx265", "flac", "eac3"].every((e) => encoders.includes(` ${e} `));
+    return ["libx264", "libx265", "flac", "eac3", "aac"].every((e) => encoders.includes(` ${e} `));
   } catch {
     return false;
   }
@@ -340,11 +340,11 @@ describe.skipIf(!hasFfmpeg)("encoding a file (needs ffmpeg with x264/x265)", () 
     }[];
     expect(streams.map((s) => `${s.codec_type}:${s.codec_name}`)).toEqual([
       "video:hevc",
-      "audio:eac3",
+      "audio:aac",
       "subtitle:subrip",
     ]);
     expect(streams[0]).toMatchObject({ width: 640, height: 272 });
-    expect(streams[1]).toMatchObject({ channels: 6 });
+    expect(streams[1]).toMatchObject({ channels: 2 });
     expect(streams[2]?.tags?.language).toBe("eng");
     expect(Object.entries(out.format.tags).find(([k]) => k.toLowerCase() === "kondo")?.[1]).toBe(
       "test",

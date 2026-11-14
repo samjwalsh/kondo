@@ -182,23 +182,64 @@ export class PlexClient {
       .filter((n): n is number => typeof n === "number");
   }
 
+  /** The Plex library whose folders contain `file` (a file or folder path). */
+  private async sectionFor(file: string) {
+    return (await this.sections()).find((d) =>
+      (d.Location ?? []).some((l) => {
+        const root = l.path.replace(/\/+$/, "");
+        return file === root || file.startsWith(`${root}/`);
+      }),
+    );
+  }
+
   /**
    * Asks Plex to rescan one folder. Returns the library's name, or null if no Plex library
    * contains the folder.
    */
   async refreshFolder(folder: string): Promise<string | null> {
-    const section = (await this.sections()).find((d) =>
-      (d.Location ?? []).some((l) => {
-        const root = l.path.replace(/\/+$/, "");
-        return folder === root || folder.startsWith(`${root}/`);
-      }),
-    );
+    const section = await this.sectionFor(folder);
     if (!section) return null;
     await request(
       `${this.base()}/library/sections/${section.key}/refresh?path=${encodeURIComponent(folder)}`,
       { headers: this.headers(), timeoutMs: 10_000 },
     );
     return section.title ?? section.key;
+  }
+
+  /** The rating key of the film or episode whose file is exactly `file`, or null. */
+  async itemForFile(file: string): Promise<string | null> {
+    const section = await this.sectionFor(file);
+    if (section?.type !== "movie" && section?.type !== "show") return null;
+    const type = section.type === "movie" ? FILM : EPISODE;
+    // `file==` matches the whole path; `file=` would match any path containing it.
+    const json = await requestJson<LibraryItemsResponse>(
+      `${this.base()}/library/sections/${section.key}/all?type=${type}&file%3D=${encodeURIComponent(file)}`,
+      { headers: this.headers(), timeoutMs: 30_000 },
+    );
+    return json.MediaContainer?.Metadata?.[0]?.ratingKey ?? null;
+  }
+
+  /**
+   * Plex's "Analyze" for one item. Plex only looks at a replaced file quickly (size, codecs,
+   * average bitrate) and keeps the old file's peak bitrates from its deep analysis, which decide
+   * whether a player with a bandwidth limit can play it directly. After Analyze, Plex's deep
+   * analysis task measures the item again.
+   */
+  async analyze(ratingKey: string): Promise<void> {
+    await request(`${this.base()}/library/metadata/${encodeURIComponent(ratingKey)}/analyze`, {
+      method: "PUT",
+      headers: this.headers(),
+      timeoutMs: 30_000,
+    });
+  }
+
+  /** Starts Plex's deep media analysis task now instead of in its nightly maintenance. */
+  async startDeepAnalysis(): Promise<void> {
+    await request(`${this.base()}/butler/DeepMediaAnalysis`, {
+      method: "POST",
+      headers: this.headers(),
+      timeoutMs: 30_000,
+    });
   }
 
   async test(): Promise<TestResult> {

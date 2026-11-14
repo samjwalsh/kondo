@@ -8,6 +8,7 @@ export type ReasonCode =
   | "old-codec"
   | "h265-high-bitrate"
   | "foreign-audio"
+  | "audio-compat"
   | "already-efficient"
   | "kondo-done"
   | "squish-done"
@@ -26,6 +27,7 @@ export const REASON_LABELS: Record<ReasonCode, string> = {
   "old-codec": "Older codec → H.265",
   "h265-high-bitrate": "H.265 above the bitrate threshold",
   "foreign-audio": "Other-language audio to remove",
+  "audio-compat": "Audio to convert to stereo AAC",
   "already-efficient": "Already H.265/AV1 at a good size",
   "kondo-done": "Already done by Kondo",
   "squish-done": "Already done by Squish",
@@ -112,7 +114,7 @@ export interface PlannedTrack {
   /** e.g. "English · DTS-HD MA 5.1 · “Commentary”" */
   summary: string;
   action: "keep" | "convert" | "drop";
-  /** For conversions, e.g. "E-AC3 5.1 · 640 kb/s". */
+  /** For conversions, e.g. "AAC stereo · 192 kb/s". */
   to?: string;
   reason: string;
   /** Becomes the default track of its kind in the new file. */

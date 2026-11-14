@@ -139,6 +139,21 @@ describe("swapping a result into the library", () => {
     });
   });
 
+  it("asks Plex to analyse the new file a few minutes later, newest first", async () => {
+    const t = setup();
+    t.store.queuePlexAnalyse("/older.mkv", new Date(Date.now() - 60_000));
+    await runSwap(fakeJob(t.id), t.deps);
+    expect(t.store.plexAnalyseWaiting()).toBe(2);
+    // Not yet: Plex rescans the folder first.
+    expect(t.store.nextPlexAnalyse(new Date())?.path).toBe("/older.mkv");
+    const later = new Date(Date.now() + 5 * 60_000);
+    expect(t.store.nextPlexAnalyse(later)).toEqual({ path: t.source, tries: 0 });
+    t.store.retryPlexAnalyse(t.source, new Date(Date.now() + 60 * 60_000));
+    expect(t.store.nextPlexAnalyse(later)?.path).toBe("/older.mkv");
+    t.store.plexAnalyseDone("/older.mkv");
+    expect(t.store.nextPlexAnalyse(later)).toBeNull();
+  });
+
   it("swaps an .mp4 for an .mkv and removes the old file", async () => {
     const t = setup("Show - S01E01.mp4");
     await runSwap(fakeJob(t.id), t.deps);

@@ -143,6 +143,20 @@ export const migrations: Migration[] = [
         WHERE o.status IN ('not-worth-it', 'rejected', 'failed') ORDER BY o.updated_at;
     `,
   },
+  {
+    // Files Plex should analyse again (its peak-bitrate figures are from the file Kondo replaced).
+    // Starts with every file swapped in so far.
+    version: 7,
+    sql: `
+      CREATE TABLE transcode_plex_analyse (
+        path TEXT PRIMARY KEY,
+        due_at TEXT NOT NULL,
+        tries INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT OR IGNORE INTO transcode_plex_analyse (path, due_at)
+        SELECT path, MAX(swapped_at) FROM transcode_history GROUP BY path ORDER BY MAX(swapped_at) DESC;
+    `,
+  },
 ];
 
 /** Dedupe key of the encode job for a file (also used to find it in the core jobs table). */
@@ -161,9 +175,13 @@ const ACTIVE_SWAP = activeJob("transcode:swap:");
 const TO_ENCODE =
   "f.decision = 'transcode' AND (o.file_id IS NULL OR (o.status = 'failed' AND o.attempts < 2))";
 
-/** Marked for a remux; never tried (a Squish or not-worth-it result is about the video) or failed once. */
+/**
+ * Marked for a remux; never tried (a Squish, not-worth-it or swapped-in result is about an earlier
+ * change) or failed once. A swap clears the file's decision until the next scan, so a file just
+ * swapped in is never picked again by mistake.
+ */
 const TO_REMUX =
-  "f.decision = 'remux' AND (o.file_id IS NULL OR o.status IN ('squish', 'not-worth-it') OR (o.status = 'failed' AND o.attempts < 2))";
+  "f.decision = 'remux' AND (o.file_id IS NULL OR o.status IN ('squish', 'not-worth-it', 'done') OR (o.status = 'failed' AND o.attempts < 2))";
 
 /** A file Kondo stopped trying to encode after it failed twice. */
 export interface GaveUpFile {
@@ -656,6 +674,8 @@ export class LibraryStore {
           now,
           done.details ? JSON.stringify(done.details) : null,
         );
+      // Plex rescans first; it's asked to analyse the new file a few minutes later.
+      this.queuePlexAnalyse(done.path, new Date(Date.now() + 3 * 60_000));
       this.log(fileId, "replaced", {
         path: done.path,
         sourceBytes: done.sourceBytes,
@@ -665,6 +685,42 @@ export class LibraryStore {
         at: now,
       });
     });
+  }
+
+  /** Asks for `file` to be analysed again by Plex from `due` on. */
+  queuePlexAnalyse(file: string, due: Date): void {
+    this.db
+      .prepare(
+        `INSERT INTO transcode_plex_analyse (path, due_at, tries) VALUES (?, ?, 0)
+         ON CONFLICT (path) DO UPDATE SET due_at = excluded.due_at, tries = 0`,
+      )
+      .run(file, due.toISOString());
+  }
+
+  /** The next file due for Plex to analyse (latest swap first, so new ones skip the backlog). */
+  nextPlexAnalyse(now: Date): { path: string; tries: number } | null {
+    const row = this.db
+      .prepare(
+        "SELECT path, tries FROM transcode_plex_analyse WHERE due_at <= ? ORDER BY due_at DESC LIMIT 1",
+      )
+      .get(now.toISOString());
+    return row ? { path: String(row.path), tries: Number(row.tries) } : null;
+  }
+
+  /** Plex couldn't find the file yet: try again at `due`. */
+  retryPlexAnalyse(file: string, due: Date): void {
+    this.db
+      .prepare("UPDATE transcode_plex_analyse SET due_at = ?, tries = tries + 1 WHERE path = ?")
+      .run(due.toISOString(), file);
+  }
+
+  plexAnalyseDone(file: string): void {
+    this.db.prepare("DELETE FROM transcode_plex_analyse WHERE path = ?").run(file);
+  }
+
+  plexAnalyseWaiting(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM transcode_plex_analyse").get();
+    return Number(row?.n ?? 0);
   }
 
   /** Adds a line to the permanent history of what Kondo did. */
