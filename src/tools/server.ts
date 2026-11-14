@@ -4,6 +4,7 @@ import type { ToolDefinition } from "../server/core/tools.js";
 import attention from "./attention/server.js";
 import diagnostics from "./diagnostics/server.js";
 import downloads from "./downloads/server.js";
+import ips from "./ips/server.js";
 import missing from "./missing/server.js";
 import requests from "./requests/server.js";
 import transcode from "./transcode/server.js";
@@ -15,5 +16,6 @@ export const tools: ToolDefinition[] = [
   downloads,
   missing,
   requests,
+  ips,
   diagnostics,
 ];
