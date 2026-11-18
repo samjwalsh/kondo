@@ -25,10 +25,8 @@ export function morningSummary(
 
   const lines = [
     replaced.length > 0
-      ? `Kondo replaced ${plural(replaced.length, "file")}, saving ${size(saved)} (${size(state.savedSoFar)} so far).`
-      : entries.length > 0
-        ? "Kondo didn't replace anything."
-        : `Kondo is running; nothing was replaced${state.idleBecause ? ` (${state.idleBecause})` : ""}.`,
+      ? `Replaced ${plural(replaced.length, "file")}, saved ${size(saved)} (${size(state.savedSoFar)} total)`
+      : `Nothing replaced${entries.length === 0 && state.idleBecause ? ` (${state.idleBecause})` : ""}`,
   ];
   const others = [
     [count("not-worth-it"), "not worth it"],
@@ -38,9 +36,9 @@ export function morningSummary(
   ]
     .filter(([n]) => Number(n) > 0)
     .map(([n, label]) => `${n} ${label}`);
-  if (others.length > 0) lines.push(`${others.join(" · ")}. Details on the Transcode page.`);
-  const left = [`${state.toTranscode.toLocaleString("en-GB")} left to transcode`];
-  if (state.awaitingApproval > 0) left.push(`${state.awaitingApproval} waiting for your approval`);
-  lines.push(`${left.join(" · ")}.`);
+  if (others.length > 0) lines.push(others.join(" · "));
+  const left = [`${state.toTranscode.toLocaleString("en-GB")} to go`];
+  if (state.awaitingApproval > 0) left.push(`${state.awaitingApproval} awaiting approval`);
+  lines.push(left.join(" · "));
   return lines;
 }

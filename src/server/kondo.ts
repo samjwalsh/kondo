@@ -303,7 +303,7 @@ async function registerTool(tool: ToolDefinition, deps: ToolDeps): Promise<void>
     routes: (register) => routes.push(register),
     every: (intervalMs, task, firstAfterMs) => deps.repeating.add(intervalMs, task, firstAfterMs),
     setCard: (card) => deps.cards.set(tool.id, card),
-    addSummary: (lines) => deps.summary.add(tool.id, lines),
+    addSummary: (lines) => deps.summary.add(tool.name, lines),
   };
   await tool.register(ctx);
   if (routes.length > 0) {

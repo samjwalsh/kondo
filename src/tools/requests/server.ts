@@ -147,11 +147,8 @@ export default defineTool({
       const sent = notices.filter((n) => n.status === "sent");
       const failed = notices.filter((n) => n.status === "failed").length;
       const out: string[] = [];
-      if (sent.length > 0)
-        out.push(
-          `Emailed ${sent.length} request(s) ready to watch: ${sent.map((n) => n.title).join(", ")}.`,
-        );
-      if (failed > 0) out.push(`${failed} request email(s) failed; see Request emails.`);
+      if (sent.length > 0) out.push(`Ready to watch: ${sent.map((n) => n.title).join(", ")}`);
+      if (failed > 0) out.push(`${failed} ${failed === 1 ? "email" : "emails"} failed`);
       return out;
     });
   },

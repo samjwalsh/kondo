@@ -26,29 +26,23 @@ describe("morning summary", () => {
     ).join("\n");
     expect(text).toBe(
       [
-        "Kondo replaced 2 files, saving 6 GB (1.25 TB so far).",
-        "1 not worth it · 1 failed. Details on the Transcode page.",
-        "1,526 left to transcode.",
+        "Replaced 2 files, saved 6 GB (1.25 TB total)",
+        "1 not worth it · 1 failed",
+        "1,526 to go",
       ].join("\n"),
     );
   });
 
   it("mentions results waiting for approval, and nights with only problems", () => {
     expect(morningSummary([entry("failed")], { ...state, awaitingApproval: 3 }).join("\n")).toBe(
-      [
-        "Kondo didn't replace anything.",
-        "1 failed. Details on the Transcode page.",
-        "1,526 left to transcode · 3 waiting for your approval.",
-      ].join("\n"),
+      ["Nothing replaced", "1 failed", "1,526 to go · 3 awaiting approval"].join("\n"),
     );
   });
 
   it("still checks in after a quiet night, with the reason when there's an obvious one", () => {
-    expect(morningSummary([], state).join("\n")).toBe(
-      "Kondo is running; nothing was replaced.\n1,526 left to transcode.",
-    );
+    expect(morningSummary([], state).join("\n")).toBe("Nothing replaced\n1,526 to go");
     expect(morningSummary([], { ...state, idleBecause: "paused" }).join("\n")).toBe(
-      "Kondo is running; nothing was replaced (paused).\n1,526 left to transcode.",
+      "Nothing replaced (paused)\n1,526 to go",
     );
   });
 });

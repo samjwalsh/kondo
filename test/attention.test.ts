@@ -115,11 +115,10 @@ describe("needs a look", () => {
     t.at(T0 + DAY);
     await t.check();
     expect(summaryLines(t.status())).toEqual([
-      "Needs a look:",
-      "• Not found or not finished after a day: Show (2 episodes)",
-      "• Still waiting for a better copy (e.g. not just a dub) after a day: Family Guy (1 episode)",
-      "• Download stuck for a day: Old Show S01E03 (The download is stalled with no connections)",
-      "• Stuck in the download queue for 6+ h: Other S02E01 (Sonarr: Unable to match)",
+      "• Still missing after a day: Show (2 episodes)",
+      "• No better copy (e.g. only a dub) after a day: Family Guy (1 episode)",
+      "• Download stalled for a day: Old Show S01E03 (The download is stalled with no connections)",
+      "• In the queue for 6+ h: Other S02E01 (Sonarr: Unable to match)",
       "• Sonarr: Indexers unavailable due to failures: LimeTorrents",
     ]);
   });
@@ -206,8 +205,8 @@ describe("needs a look", () => {
     t.state.health = [];
     await t.check();
     t.at(T0 + DAY);
-    expect(summaryLines(t.status())[1]).toBe(
-      "• Not found or not finished after a day: Show 0 (1 episode), Show 1 (1 episode), Show 2 (1 episode), Show 3 (1 episode) and 3 more",
+    expect(summaryLines(t.status())[0]).toBe(
+      "• Still missing after a day: Show 0 (1 episode), Show 1 (1 episode), Show 2 (1 episode), Show 3 (1 episode) and 3 more",
     );
   });
 });
@@ -239,8 +238,7 @@ describe("items Plex couldn't match", () => {
     now = T0 + 6 * 3_600_000;
     await check();
     expect(summaryLines(attentionStatus(store, LIMITS, now))).toEqual([
-      "Needs a look:",
-      "• Not matched in Plex for 6+ h (⋯ → Match…): Warrior (2011), The Last of Us (2023)",
+      "• Unmatched in Plex for 6+ h (⋯ → Match…): Warrior (2011), The Last of Us (2023)",
     ]);
 
     unmatched = unmatched.slice(1);
@@ -281,8 +279,8 @@ describe("files Transcode gave up on", () => {
     expect(due).toMatchObject([
       { key: "transcode:failed:6383", kind: "transcode", what: "Show S01E01 (1080p BluRay)" },
     ]);
-    expect(summaryLines(attentionStatus(store, LIMITS, T0))[1]).toMatch(
-      /^• Transcode failed twice, not trying again .*: Show S01E01 \(1080p BluRay\) \(The result failed/,
+    expect(summaryLines(attentionStatus(store, LIMITS, T0))[0]).toMatch(
+      /^• Transcode failed twice .*: Show S01E01 \(1080p BluRay\) \(The result failed/,
     );
 
     failures = [];

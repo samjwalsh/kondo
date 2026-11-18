@@ -115,7 +115,7 @@ export default defineTool({
     ctx.setCard(() => {
       const s = attentionStatus(store, limits());
       if (!s.checkedAt) return { status: "ok", lines: ["Waiting for the first check…"] };
-      const lines = summaryLines(s).slice(1);
+      const lines = summaryLines(s);
       if (s.errors.length > 0) lines.push(`Couldn't check: ${s.errors.join("; ")}`);
       return lines.length > 0
         ? { status: "warn", lines }

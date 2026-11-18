@@ -56,7 +56,10 @@ export interface ToolContext {
   every(intervalMs: () => number, task: () => void | Promise<void>, firstAfterMs?: number): void;
   /** The dashboard summary, built from the tool's own state. */
   setCard(card: () => ToolCard | Promise<ToolCard>): void;
-  /** Lines for the morning Telegram summary: what the tool did since `since`. */
+  /**
+   * Lines for the morning Telegram summary (plain text, under the tool's name): what the tool did
+   * since `since`. Keep them short; none on a quiet day.
+   */
   addSummary(lines: SummarySection): void;
 }
 

@@ -149,9 +149,9 @@ export default defineTool({
       const searched = runs.reduce((n, r) => n + r.searched.length, 0);
       const out: string[] = [];
       if (searched > 0)
-        out.push(`Asked Sonarr/Radarr to search again for ${searched} missing item(s).`);
+        out.push(`Searched again for ${searched} ${searched === 1 ? "item" : "items"}`);
       const errors = runs.filter((r) => r.error).length;
-      if (errors > 0) out.push(`${errors} missing search(es) failed; see Missing.`);
+      if (errors > 0) out.push(`${errors} ${errors === 1 ? "run" : "runs"} failed`);
       return out;
     });
   },

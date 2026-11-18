@@ -69,9 +69,15 @@ export class Telegram {
     return reply.result as T;
   }
 
-  async send(text: string): Promise<void> {
+  /** With `html`, the text is Telegram HTML (<b>, <i>…) and must escape &, < and > itself. */
+  async send(text: string, options: { html?: boolean } = {}): Promise<void> {
     const chatId = String(this.settings.values("telegram").chatId ?? "");
-    await this.call("sendMessage", { chat_id: chatId, text, disable_web_page_preview: true });
+    await this.call("sendMessage", {
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      ...(options.html ? { parse_mode: "HTML" } : {}),
+    });
   }
 
   async test(): Promise<TestResult> {
