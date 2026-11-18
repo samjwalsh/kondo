@@ -236,7 +236,7 @@ const clip = (text: string, max = 110) => (text.length > max ? `${text.slice(0, 
 
 const days = (n: number) => (n === 1 ? "a day" : `${n} days`);
 
-/** The "Needs a look" lines of the morning summary; none on a quiet day. */
+/** The "Needs a look" lines of the morning summary (and its card); none on a quiet day. */
 export function summaryLines(status: AttentionStatus): string[] {
   const due = status.due;
   const lines: string[] = [];
@@ -245,19 +245,19 @@ export function summaryLines(status: AttentionStatus): string[] {
   const notFound = of("not-found");
   if (notFound.length > 0) {
     lines.push(
-      `• Not found or not finished after ${days(status.stuckDays)}: ${shortList(byGroup(notFound, ["episode", "episodes"]))}`,
+      `• Still missing after ${days(status.stuckDays)}: ${shortList(byGroup(notFound, ["episode", "episodes"]))}`,
     );
   }
   const replace = of("replace");
   if (replace.length > 0) {
     lines.push(
-      `• Still waiting for a better copy (e.g. not just a dub) after ${days(status.stuckDays)}: ${shortList(byGroup(replace, ["episode", "episodes"]))}`,
+      `• No better copy (e.g. only a dub) after ${days(status.stuckDays)}: ${shortList(byGroup(replace, ["episode", "episodes"]))}`,
     );
   }
   const stalled = of("stalled");
   if (stalled.length > 0) {
     lines.push(
-      `• Download stuck for ${days(status.stuckDays)}: ${shortList(
+      `• Download stalled for ${days(status.stuckDays)}: ${shortList(
         stalled.map((i) => `${i.what} (${clip(i.detail ?? "", 60)})`),
         3,
       )}`,
@@ -266,7 +266,7 @@ export function summaryLines(status: AttentionStatus): string[] {
   const imports = of("import");
   if (imports.length > 0) {
     lines.push(
-      `• Stuck in the download queue for ${status.stuckHours}+ h: ${shortList(
+      `• In the queue for ${status.stuckHours}+ h: ${shortList(
         imports.map((i) => `${i.what} (${APP_NAMES[i.app] ?? i.app}: ${clip(i.detail ?? "", 60)})`),
         3,
       )}`,
@@ -275,13 +275,13 @@ export function summaryLines(status: AttentionStatus): string[] {
   const unmatched = of("unmatched");
   if (unmatched.length > 0) {
     lines.push(
-      `• Not matched in Plex for ${status.stuckHours}+ h (⋯ → Match…): ${shortList(unmatched.map((i) => i.what))}`,
+      `• Unmatched in Plex for ${status.stuckHours}+ h (⋯ → Match…): ${shortList(unmatched.map((i) => i.what))}`,
     );
   }
   const transcode = of("transcode");
   if (transcode.length > 0) {
     lines.push(
-      `• Transcode failed twice, not trying again (Needs a look → Try again): ${shortList(
+      `• Transcode failed twice (Try again on Needs a look): ${shortList(
         transcode.map((i) => `${i.what} (${clip(i.detail ?? "", 60)})`),
         3,
       )}`,
@@ -289,6 +289,5 @@ export function summaryLines(status: AttentionStatus): string[] {
   }
   for (const h of of("health")) lines.push(`• ${APP_NAMES[h.app] ?? h.app}: ${clip(h.what)}`);
   for (const s of of("service")) lines.push(`• ${s.what} (${clip(s.detail ?? "", 60)})`);
-  if (lines.length === 0) return [];
-  return ["Needs a look:", ...lines];
+  return lines;
 }

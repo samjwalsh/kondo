@@ -220,19 +220,15 @@ export default defineTool({
     ctx.addSummary((since) => {
       const recent = store.entries({ since, limit: 1000 });
       const out: string[] = [];
-      for (const [kind, noun] of [
-        ["fake", "fake download(s)"],
-        ["stuck", "stuck download(s)"],
-      ] as const) {
+      for (const kind of ["fake", "stuck"] as const) {
         const removed = recent.filter((e) => e.action === "removed" && e.kind === kind);
         if (removed.length === 0) continue;
         const names = removed.map((e) => e.what ?? e.name).slice(0, 5);
-        out.push(
-          `Removed ${removed.length} ${noun}, searching again: ${names.join(", ")}${removed.length > 5 ? "…" : ""}.`,
-        );
+        const more = removed.length > 5 ? ` and ${removed.length - 5} more` : "";
+        out.push(`Removed ${removed.length} ${kind}: ${names.join(", ")}${more}`);
       }
       const waiting = waitingText(status().waiting);
-      if (waiting) out.push(`${waiting} left in qBittorrent; see Downloads.`);
+      if (waiting) out.push(`Still in qBittorrent: ${waiting}`);
       return out;
     });
   },
